@@ -1,0 +1,38 @@
+# ---- 模型权重(GitHub 单文件 100MB 限制,mobileclip2_b.ts 有 242MB)----
+*.pt
+*.ts
+*.onnx
+*.engine
+*.pth
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- 生成的产物(可随时重跑生成)----
+pointclouds/
+*_pointcloud.ply
+*_mesh.ply
+*_depth.png
+*_result.jpg
+compare_out.png
+features.csv
+alarm_result.csv
+features.xlsx
+app_server.log
+
+# ---- 已弃用的模型与脚本(备份,不入库)----
+_deprecated/
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+.vscode/
+.idea/
+*.swp
