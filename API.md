@@ -22,7 +22,8 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 
 | 键 | 默认 | 环境变量 | 说明 |
 |---|---|---|---|
-| `device_id` | `site1` | `MONITOR_DEVICE_ID` | 点位标识,多节点汇入平台时区分 |
+| `device_id` | `site1` | `MONITOR_DEVICE_ID` | 当前生效的设备号(点位标识),多节点汇入平台时用它区分 |
+| `devices` | `{}` | — | 设备元信息 `{"<device_id>": {"name","location","rtsp_url"}}`,自动登记进 `devices` 表 |
 | `db_path` | `data/monitor.db` | `MONITOR_DB` | SQLite 文件(相对项目根) |
 | `images_dir` | `images` | `MONITOR_IMAGES_DIR` | 网页端抓图落盘目录 |
 | `api_host` | `127.0.0.1` | `MONITOR_API_HOST` | 监听地址 |
@@ -33,20 +34,39 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 
 | 入口 | 命令 |
 |---|---|
-| 命令行批量 | `.venv/bin/python features.py ./snapshots --db` |
+| 命令行批量 | `.venv/bin/python features.py ./snapshots --db --device HIK-01` |
 | 命令行指定库 | `.venv/bin/python features.py 3.jpg --db /path/monitor.db` |
-| 网页台 | 点「提取滑坡特征」自动落盘图片 + 入库(用 config 默认库) |
-| 报警重算 | `.venv/bin/python alarm.py --db`(取尾部 500 帧重算,`--limit` 可调) |
+| 网页台 | 点「提取滑坡特征」自动落盘图片 + 入库(用 config 默认设备号) |
+| 报警重算 | `.venv/bin/python alarm.py --db --device HIK-01`(取尾部 500 帧重算,`--limit` 可调) |
 
 写入是**幂等**的:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复。
 数据库是事实源;`features.csv` 仍照常产出,作为兼容导出。
+
+## 设备号(device_id)
+
+每帧都归属一个设备号——后续一路海康 RTSP 流对应一个点位,设备号就是它的标识。
+
+- **指定方式**:CLI 用 `--device`(优先级最高),否则取 `config.json` 的 `device_id`。
+  报警重算同样支持 `alarm.py --db --device <号>`。
+- **元信息**:在 `config.json` 的 `devices` 里登记名称、位置、RTSP 地址,
+  首次入库时自动写进 `devices` 表;平台用 `/api/v1/devices` 查询,
+  **已登记但还没数据的设备也会列出**(`frames: 0`)。
+- **RTSP 地址不对外**:`rtsp_url` 含相机口令,API 只返回 `has_rtsp_url` 布尔值,
+  地址本身只供本机抓图模块使用。
+
+> 默认设备号是占位值 `site1`,上线前请改掉;命令行入库时若仍是占位值会打印提醒。
+
+**后续接入海康 RTSP 的做法**(尚未实现):一个点位配一个 `device_id` 和一条 `rtsp_url`,
+定时从 `rtsp://…/Streaming/Channels/101` 抓帧存盘(文件名带时间戳),再调
+`features.py <图片> --db --device <号>` 入库即可,无需改动存储与接口层。
 
 ## 接口一览(前缀 `/api/v1`)
 
 | 方法 | 路径 | 说明 | 主要参数 |
 |---|---|---|---|
 | GET | `/health` | 探活:schema 版本、库路径、帧数 | — |
-| GET | `/devices` | 设备列表:帧数、首末上报、当前报警等级 | — |
+| GET | `/devices` | 设备列表:设备号、名称/位置、帧数、首末上报、当前报警等级 | — |
+| GET | `/devices/{device_id}` | 单台设备状态 | — |
 | GET | `/frames` | 条件查询特征帧 | `device_id`, `since`, `until`, `limit`, `offset`, `order` |
 | GET | `/frames/latest` | 最近 N 帧(看板) | `device_id`, `n` |
 | GET | `/frames/{id}` | 单帧全字段 | — |
@@ -92,6 +112,8 @@ curl -s -H "X-API-Key: <你的key>" localhost:8000/api/v1/devices
 **`alarms`** — 每帧的报警判定:`valid`、`score`、`top_signal`、`top_severity`、`level`(0~3)、
 `level_name`、`camera_alarm`,以及 `detail` JSON(各信号单独存 `z`/`rate`/`accel`)。
 主键 `(device_id, captured_at)`。
+
+**`devices`** — 设备号 + 元信息(`name`、`location`、`rtsp_url`),首次入库自动登记。
 
 **`meta`** — `schema_version`,用于后续迁移。
 

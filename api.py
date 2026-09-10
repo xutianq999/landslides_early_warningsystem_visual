@@ -69,9 +69,22 @@ def health():
 @app.get("/api/v1/devices", tags=["设备"], summary="设备列表与当前状态",
          dependencies=[Depends(require_key)])
 def devices():
-    """每台设备的帧数、首末上报时间、最近一次报警等级。"""
+    """每台设备:设备号、名称/位置(来自 config.devices)、帧数、首末上报、当前报警等级。
+
+    含已登记但暂无数据的设备;`rtsp_url` 不回传(内含相机口令),只给 `has_rtsp_url`。
+    """
     with _conn() as conn:
         return dbm.list_devices(conn)
+
+
+@app.get("/api/v1/devices/{device_id}", tags=["设备"], summary="单台设备状态",
+         dependencies=[Depends(require_key)])
+def device(device_id: str):
+    with _conn() as conn:
+        d = dbm.get_device(conn, device_id)
+    if not d:
+        raise HTTPException(status_code=404, detail=f"设备不存在: {device_id}")
+    return d
 
 
 @app.get("/api/v1/frames", tags=["特征"], summary="按条件查询特征帧",

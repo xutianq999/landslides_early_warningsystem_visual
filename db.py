@@ -25,7 +25,7 @@ from pathlib import Path
 
 import config
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 META_KEY = "schema_version"
 
 # features.py 输出的特征列(原始名,顺序即建表顺序)
@@ -130,6 +130,15 @@ CREATE INDEX IF NOT EXISTS idx_alarms_level ON alarms(level);
 CREATE INDEX IF NOT EXISTS idx_alarms_captured ON alarms(captured_at);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+
+CREATE TABLE IF NOT EXISTS devices (
+  device_id TEXT PRIMARY KEY,
+  name TEXT,
+  location TEXT,
+  rtsp_url TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """)
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                  (META_KEY, SCHEMA_VERSION))
@@ -158,6 +167,33 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# ---------------------------------------------------------------- 设备
+
+def register_device(conn: sqlite3.Connection, device_id: str, name=None,
+                    location=None, rtsp_url=None) -> None:
+    """登记/更新设备元信息(幂等)。只覆盖传入的非空字段。"""
+    init_db(conn)
+    now = _iso_now()
+    conn.execute("""
+        INSERT INTO devices (device_id, name, location, rtsp_url, created_at, updated_at)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(device_id) DO UPDATE SET
+          name      = COALESCE(excluded.name, devices.name),
+          location  = COALESCE(excluded.location, devices.location),
+          rtsp_url  = COALESCE(excluded.rtsp_url, devices.rtsp_url),
+          updated_at= excluded.updated_at
+    """, (device_id, name, location, rtsp_url, now, now))
+    conn.commit()
+
+
+def register_device_from_config(conn: sqlite3.Connection, device_id: str | None = None) -> str:
+    """按 config.json 的 devices 元信息登记设备(没有元信息也登记一条空记录)"""
+    dev = device_id or config.CONFIG["device_id"]
+    m = config.device_meta(dev)
+    register_device(conn, dev, m.get("name"), m.get("location"), m.get("rtsp_url"))
+    return dev
+
+
 # ---------------------------------------------------------------- 写入
 
 def upsert_frames(conn: sqlite3.Connection, rows: list[dict],
@@ -171,6 +207,7 @@ def upsert_frames(conn: sqlite3.Connection, rows: list[dict],
     """
     init_db(conn)
     dev = device_id or config.CONFIG["device_id"]
+    register_device_from_config(conn, dev)   # 顺带登记设备元信息(config.devices)
     cols = ["device_id", "captured_at", "image_path", "created_at", *COLS, "extra"]
     quoted = ",".join(f'"{c}"' for c in cols)
     placeholders = ",".join("?" * len(cols))
@@ -335,20 +372,39 @@ def latest_alarms(conn, device_id=None) -> list[dict]:
 
 
 def list_devices(conn) -> list[dict]:
-    """设备概况:帧数、最后上报、当前等级"""
+    """设备概况:设备号 + 元信息 + 帧数/首末上报 + 当前等级。
+
+    已登记但还没有数据的设备也会列出。**不回传 rtsp_url**(含相机口令),
+    只给 has_rtsp_url 布尔值。
+    """
     init_db(conn)
-    sql = """SELECT f.device_id,
-                    COUNT(*) AS frames,
-                    MIN(f.captured_at) AS first_seen,
-                    MAX(f.captured_at) AS last_seen
-             FROM frames f GROUP BY f.device_id ORDER BY last_seen DESC"""
-    out = _dicts(conn.execute(sql))
-    for d in out:
+    stats = {r["device_id"]: dict(r) for r in conn.execute(
+        "SELECT device_id, COUNT(*) AS frames, MIN(captured_at) AS first_seen,"
+        " MAX(captured_at) AS last_seen FROM frames GROUP BY device_id")}
+    meta = {r["device_id"]: dict(r) for r in conn.execute("SELECT * FROM devices")}
+    out = []
+    for dev in sorted(set(stats) | set(meta)):
+        s, m = stats.get(dev, {}), meta.get(dev, {})
         row = conn.execute(
             "SELECT level, level_name, camera_alarm FROM alarms"
-            " WHERE device_id=? ORDER BY captured_at DESC LIMIT 1", (d["device_id"],)).fetchone()
-        d.update(dict(row) if row else {"level": None, "level_name": None, "camera_alarm": None})
+            " WHERE device_id=? ORDER BY captured_at DESC LIMIT 1", (dev,)).fetchone()
+        out.append({
+            "device_id": dev,
+            "name": m.get("name"), "location": m.get("location"),
+            "has_rtsp_url": bool(m.get("rtsp_url")),
+            "frames": s.get("frames", 0),
+            "first_seen": s.get("first_seen"), "last_seen": s.get("last_seen"),
+            **(dict(row) if row else {"level": None, "level_name": None, "camera_alarm": None}),
+        })
+    out.sort(key=lambda d: d["last_seen"] or "", reverse=True)
     return out
+
+
+def get_device(conn, device_id: str) -> dict | None:
+    for d in list_devices(conn):
+        if d["device_id"] == device_id:
+            return d
+    return None
 
 
 def series(conn, fields: list[str], device_id=None, since=None, until=None,

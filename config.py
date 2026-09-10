@@ -11,7 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 DEFAULTS = {
-    "device_id": "site1",          # 现场设备/点位标识,多节点汇入平台时用它区分
+    "device_id": "site1",          # 当前生效的设备号(点位标识),多节点汇入平台时靠它区分
+    "devices": {},                 # 设备元信息: {"<device_id>": {"name":..,"location":..,"rtsp_url":..}}
     "db_path": "data/monitor.db",  # SQLite 文件(相对项目根)
     "images_dir": "images",        # 图片落盘目录(相对项目根)
     "api_host": "127.0.0.1",       # 默认只监听本机;平台要远程拉取再改 0.0.0.0
@@ -56,3 +57,14 @@ def db_path(given: str | None = None) -> Path:
 
 def images_dir() -> Path:
     return _under_root(CONFIG["images_dir"])
+
+
+def device_meta(device_id: str | None = None) -> dict:
+    """某台设备的元信息(name / location / rtsp_url);没有则空 dict"""
+    dev = device_id or CONFIG["device_id"]
+    return (CONFIG.get("devices") or {}).get(dev, {})
+
+
+def is_placeholder_device(device_id: str | None) -> bool:
+    """是否还是默认占位设备号(提醒现场改成真实编号)"""
+    return (device_id or CONFIG["device_id"]) == DEFAULTS["device_id"]

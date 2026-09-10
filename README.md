@@ -159,13 +159,15 @@ DA V2 Base 实测无实质收益(Small 相关性 0.996、成图肉眼无差,却�
 特征与报警落 SQLite,由本机 FastAPI 服务暴露 HTTP 接口供平台拉取。**接口与字段说明见 [API.md](API.md)**。
 
 ```bash
-cp config.example.json config.json     # 改 device_id / 监听地址等
+cp config.example.json config.json     # 改 device_id / devices 元信息 / 监听地址等
 .venv/bin/python db.py --init          # 建表
-.venv/bin/python features.py 3.jpg --db        # 提取特征并入库
-.venv/bin/python alarm.py --db                 # 取尾部窗口重算报警并写回
+.venv/bin/python features.py 3.jpg --db --device HIK-01   # 提取特征并入库(带设备号)
+.venv/bin/python alarm.py --db --device HIK-01            # 尾部窗口重算报警并写回
 .venv/bin/python api.py                        # http://127.0.0.1:8000/docs
 ```
 
+- **设备号**:每帧归属一个 `device_id`(后续一路海康 RTSP 流 = 一个点位)。CLI 用 `--device`
+  指定,否则取 `config.json`;`devices` 里可登记名称/位置/RTSP 地址,首次入库自动注册。
 - 写入**幂等**:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复;`NaN` 存 `NULL`。
 - 图片留磁盘(`images/`),库里只存路径;`GET /api/v1/frames/{id}/image` 按路径回传。
 - 默认只监听 `127.0.0.1` 且不鉴权;要远程拉取先改 `api_host` 并设 `api_key`。

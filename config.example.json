@@ -1,5 +1,12 @@
 {
-  "device_id": "site1",
+  "device_id": "HIK-01",
+  "devices": {
+    "HIK-01": {
+      "name": "1号坡面",
+      "location": "K12+300 左幅",
+      "rtsp_url": "rtsp://admin:<password>@192.168.1.64:554/Streaming/Channels/101"
+    }
+  },
   "db_path": "data/monitor.db",
   "images_dir": "images",
   "api_host": "127.0.0.1",
