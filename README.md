@@ -164,8 +164,11 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 |---|---|---|---|
 | 项目根 `yoloe-26s-seg.pt` | YOLOE 分割权重 | 31 MB | 必需 |
 | 项目根 `mobileclip2_b.ts` | CLIP 文本编码器 | 242 MB | YOLOE 文本提示必需 |
-| `models/da2-small/` | DA V2 Small | 95 MB | 默认深度模型 |
-| `models/da2-base/` | DA V2 Base | 372 MB | 精度优先 / 横向对比用;不用可删 |
+| `models/da2-small/` | DA V2 Small | 95 MB | 深度模型(唯一保留,理由见下) |
+
+**为什么只留 Small**:实测(1440×1171,MPS)Small 与 Base 的深度图相关性 **0.996**、
+成图肉眼无差,但 Base 慢 **2.25×**(286 vs 127 ms)、体积大 4×,特征差异只是整体尺度平移
+(不影响时间序列比较),深度边缘对齐甚至略差(0.256 vs 0.271)。故 Base 不再随包提供。
 
 `models/` 里是**扁平文件**(`config.json`、`model.safetensors`、`preprocessor_config.json`),
 没有 HuggingFace 缓存那种符号链接,`cp` / `rsync` / 压缩包都能正常搬运。
@@ -176,12 +179,12 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 - 从 HF 缓存重建 `models/`(解引用拷出,不需要联网):
 
 ```bash
-for pair in "Small:da2-small" "Base:da2-base"; do
-  m=${pair%%:*}; d=${pair##*:}
-  mkdir -p models/$d
-  cp -L ~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-${m}-hf/snapshots/*/* models/$d/
-done
+mkdir -p models/da2-small
+cp -L ~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-Small-hf/snapshots/*/* models/da2-small/
 ```
+
+> 网页台仍保留 Base / 横向对比选项用于临时比较:未打包 Base 权重时它们会回退到
+> HuggingFace 本地缓存;新机器上若没有缓存会直接报错。
 
 ## 部署到 Orin NX 的步骤
 
@@ -209,7 +212,7 @@ demo_camera.py         摄像头实时分割
 demo_depth.py          DA V2 深度(+ 点云/网格导出)
 requirements.txt       依赖
 test.jpg / street.jpg / 3.jpg  测试图(含各类结果输出 *_result / *_depth)
-models/                项目内自包含深度权重(da2-small / da2-base,gitignore)
+models/                项目内自包含深度权重(da2-small,gitignore)
 pointclouds/           网页台导出的点云/网格默认目录
 _deprecated/           弃用的 YOLO26-depth / DA3 脚本、权重与输出(可整目录删除)
 ```
