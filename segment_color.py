@@ -66,43 +66,53 @@ def pick_main_slope(stats):
     return best
 
 
-def main():
-    args = parse_args()
-    bgr = cv2.imread(args.image)
-    if bgr is None:
-        raise SystemExit(f"读不到图片: {args.image}")
+def detect_slope(bgr, k=5, spatial=25.0, cluster=None, work_width=480,
+                 min_area_frac=0.002, morph_size=15):
+    """Lab K-means 分割主坡体,返回 dict(mask, labels, stats, cluster)。
 
-    # 为速度先缩到 480 宽做聚类,再把标签放大回原图
-    scale = 480 / bgr.shape[1]
-    small = cv2.resize(bgr, (480, int(bgr.shape[0] * scale)), interpolation=cv2.INTER_AREA)
-    labels_s, stats = kmeans_lab(small, args.clusters, args.spatial)
+    mask 为全分辨率 uint8(0/255);labels 是降采样工作图的簇标签;
+    cluster=None 时自动挑主坡体。可被 GUI / 其他脚本复用(算法不依赖 argparse)。
+    """
+    h, w = bgr.shape[:2]
+    scale = work_width / w
+    small = cv2.resize(bgr, (work_width, max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+    labels_s, stats = kmeans_lab(small, k, spatial)
 
-    idx = args.cluster if args.cluster is not None else pick_main_slope(stats)["id"]
-    mask_s = (labels_s == idx).astype(np.uint8) * 255
-    mask = cv2.resize(mask_s, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
+    idx = cluster if cluster is not None else (pick_main_slope(stats) or {"id": 0})["id"]
+    mask = cv2.resize((labels_s == idx).astype(np.uint8) * 255, (w, h),
+                      interpolation=cv2.INTER_NEAREST)
     # 形态学清理:去小洞、平滑边界
-    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_size, morph_size))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k5, iterations=1)
 
-    # 去掉碎斑:只保留面积 ≥0.2% 的连通域
+    # 去掉碎斑:只保留面积 ≥ min_area_frac 的连通域
     n, lbl, st, _ = cv2.connectedComponentsWithStats(mask, 8)
     keep = np.zeros_like(mask)
-    min_area = 0.002 * mask.size
     for i in range(1, n):
-        if st[i, cv2.CC_STAT_AREA] >= min_area:
+        if st[i, cv2.CC_STAT_AREA] >= min_area_frac * mask.size:
             keep[lbl == i] = 255
     mask = keep
 
     # 填内部孔洞(不接触图像边界的背景连通域)
     inv = cv2.bitwise_not(mask)
     n2, lbl2, st2, _ = cv2.connectedComponentsWithStats(inv, 8)
-    H2, W2 = mask.shape
     for i in range(1, n2):
         x, y, ww, hh = (st2[i, cv2.CC_STAT_LEFT], st2[i, cv2.CC_STAT_TOP],
                         st2[i, cv2.CC_STAT_WIDTH], st2[i, cv2.CC_STAT_HEIGHT])
-        if not (x == 0 or y == 0 or x + ww >= W2 or y + hh >= H2):
+        if not (x == 0 or y == 0 or x + ww >= w or y + hh >= h):
             mask[lbl2 == i] = 255
+    return {"mask": mask, "labels": labels_s, "stats": stats, "cluster": int(idx)}
+
+
+def main():
+    args = parse_args()
+    bgr = cv2.imread(args.image)
+    if bgr is None:
+        raise SystemExit(f"读不到图片: {args.image}")
+
+    res = detect_slope(bgr, args.clusters, args.spatial, args.cluster)
+    mask, labels_s, stats, idx = res["mask"], res["labels"], res["stats"], res["cluster"]
 
     print(f"聚类数 k={args.clusters},主坡体簇=#{idx}")
     print(f"{'簇':>3} {'面积占比':>9} {'中心(x,y)':>14} {'RGB':>16}")

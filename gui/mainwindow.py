@@ -1,0 +1,133 @@
+"""主窗口:工具栏(打开图片 / 设备号)+ 标签页 + 状态栏(生效参数常驻显示)。"""
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QLabel, QMainWindow, QMessageBox,
+                               QTabWidget, QToolBar)
+
+import config
+import core
+from gui.session import Session
+from gui.workers import TaskRunner
+
+IMAGE_FILTER = "图片 (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff);;所有文件 (*)"
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("滑坡监测工作台")
+        self.resize(1480, 920)
+
+        self.session = Session()
+        self.runner = TaskRunner(self)
+
+        self._build_toolbar()
+        self._build_tabs()
+        self._build_statusbar()
+
+        self.runner.started.connect(lambda name: self.statusBar().showMessage(f"{name}…"))
+        self.runner.finished.connect(lambda: self.statusBar().showMessage("就绪"))
+        self.session.device_changed.connect(self._refresh_params)
+        self.session.image_changed.connect(self._refresh_params)
+
+    # ---------------------------------------------------------------- 工具栏
+    def _build_toolbar(self):
+        tb = QToolBar("主工具栏")
+        tb.setMovable(False)
+        self.addToolBar(tb)
+
+        act_open = QAction("打开图片…", self)
+        act_open.setShortcut("Ctrl+O")
+        act_open.triggered.connect(self.open_image)
+        tb.addAction(act_open)
+
+        act_dir = QAction("打开项目目录", self)
+        act_dir.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(config.ROOT))))
+        tb.addAction(act_dir)
+
+        tb.addSeparator()
+        tb.addWidget(QLabel("  设备号 "))
+        self.device_combo = QComboBox()
+        self.device_combo.setEditable(True)                 # 允许直接输入新设备号
+        self.device_combo.addItems(config.device_ids())
+        self.device_combo.setCurrentText(self.session.device)
+        self.device_combo.currentTextChanged.connect(self._on_device_combo)
+        tb.addWidget(self.device_combo)
+
+        tb.addSeparator()
+        act_about = QAction("关于", self)
+        act_about.triggered.connect(self.about)
+        tb.addAction(act_about)
+
+    # ---------------------------------------------------------------- 标签页
+    def _build_tabs(self):
+        from gui.tabs.capture import CaptureTab
+        from gui.tabs.data import DataTab
+        from gui.tabs.depth import DepthTab
+        from gui.tabs.features import FeaturesTab
+        from gui.tabs.segment import SegmentTab
+
+        self.tabs = QTabWidget()
+        self.segment_tab = SegmentTab(self.session, self.runner)
+        self.segment_tab.view.coords.connect(self._on_coords)
+        self.tabs.addTab(self.segment_tab, "① 分割")
+        self.tabs.addTab(DepthTab(self.session, self.runner), "② 深度")
+        self.tabs.addTab(FeaturesTab(self.session, self.runner), "③ 特征")
+        self.tabs.addTab(CaptureTab(self.session, self.runner), "④ 抓图")
+        self.tabs.addTab(DataTab(self.session, self.runner), "⑤ 数据")
+        self.setCentralWidget(self.tabs)
+
+    # ---------------------------------------------------------------- 状态栏
+    def _build_statusbar(self):
+        sb = self.statusBar()
+        self.lbl_coords = QLabel("鼠标 —")
+        self.lbl_device = QLabel()
+        self.lbl_params = QLabel()
+        self.lbl_engine = QLabel()
+        for w in (self.lbl_coords, self.lbl_device, self.lbl_params, self.lbl_engine):
+            sb.addPermanentWidget(w)
+        self._refresh_params()
+        sb.showMessage("就绪")
+
+    def _on_coords(self, x: int, y: int):
+        extra = " · 掩模内" if self.segment_tab.hit_mask(x, y) else ""
+        self.lbl_coords.setText(f"鼠标 ({x}, {y}){extra}")
+
+    def _refresh_params(self):
+        """状态栏常驻显示:当前设备号 + 生效参数 + 模型来源/推理设备"""
+        import features as F
+        dev = self.session.device
+        p = F.resolve_params(dev)
+        roi = f"自动({p['roi_target']})" if p["roi_auto"] else (str(p["roi"]) if p["roi"] else "全图")
+        self.lbl_device.setText(f"设备 {dev}")
+        self.lbl_params.setText(
+            f"参数 fov {p['fov']}° · 最远 {p['max_depth']} m · conf {p['conf']} · ROI {roi}")
+        self.lbl_engine.setText(f"模型 {core._DA2_DIR} · 推理 {core.DEVICE}")
+        self.lbl_params.setStyleSheet("")
+        self.lbl_engine.setStyleSheet("color: #666;")
+
+    # ---------------------------------------------------------------- 动作
+    def _on_device_combo(self, text: str):
+        self.session.set_device(text.strip())
+        self._refresh_params()
+
+    def open_image(self):
+        path, _ = QFileDialog.getOpenFileName(self, "打开图片", str(config.ROOT), IMAGE_FILTER)
+        if not path:
+            return
+        if not self.session.load_image(path):
+            QMessageBox.warning(self, "打开失败", f"读不到图片:\n{path}")
+            return
+        self.statusBar().showMessage(f"已载入 {path}", 4000)
+
+    def about(self):
+        QMessageBox.information(
+            self, "关于",
+            "滑坡监测工作台(PySide6)\n\n"
+            "分割 / 深度 / 特征 / 抓图 / 数据 统一入口。\n"
+            "界面只做编排,计算全部复用命令行同一套模块,结果一致。\n\n"
+            f"项目目录: {config.ROOT}\n"
+            f"推理设备: {core.DEVICE}\n"
+            f"数据库: {config.db_path()}")

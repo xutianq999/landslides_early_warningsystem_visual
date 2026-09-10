@@ -76,6 +76,13 @@ def device_meta(device_id: str | None = None) -> dict:
     return (CONFIG.get("devices") or {}).get(dev, {})
 
 
+def device_ids() -> list[str]:
+    """配置里登记过的设备号 ∪ 当前生效设备号(界面下拉/CLI 提示共用)"""
+    ids = set((CONFIG.get("devices") or {}).keys())
+    ids.add(CONFIG["device_id"])
+    return sorted(ids)
+
+
 def for_device(device_id: str | None = None) -> dict:
     """该设备生效的参数:全局 defaults 与设备自身配置合并(设备优先)。
 

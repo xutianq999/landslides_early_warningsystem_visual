@@ -16,25 +16,44 @@ import cv2
 import numpy as np
 
 
+GULLY_METHODS = ("color", "edge", "hybrid", "grabcut", "darkrun")
+
+# 分割参数的**唯一来源**:CLI 与 detect_gully() 共用,避免两处默认值漂移
+# (此前 CLI 的 --y-range 是 [0.16, 0.97],函数默认却是 (0.20, 0.93),
+#  导致命令行调出来的效果和界面/管线里的不一致。)
+GULLY_DEFAULTS = {
+    "y_range": (0.16, 0.97),
+    "x_left": (0.18, 0.52),
+    "x_right": (0.48, 0.78),
+    "max_jump": 40,
+    "method": "darkrun",
+    "fill_window": 40,
+    "extend_start": 0.70,
+    "extend_end": 0.99,
+    "extend_expand": 0.26,
+}
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="沟壑分割(颜色 / 边界追踪)")
     p.add_argument("image", nargs="?", default="3.jpg")
     p.add_argument("-o", "--out", default="gully_seg.png")
-    p.add_argument("--method", choices=["color", "edge", "hybrid", "grabcut", "darkrun"],
-                   default="darkrun")
-    p.add_argument("--y-range", nargs=2, type=float, default=[0.16, 0.97],
+    p.add_argument("--method", choices=list(GULLY_METHODS), default=GULLY_DEFAULTS["method"])
+    p.add_argument("--y-range", nargs=2, type=float, default=list(GULLY_DEFAULTS["y_range"]),
                    help="沟壑在图像中的纵向范围(归一化)")
-    p.add_argument("--x-left", nargs=2, type=float, default=[0.18, 0.52],
+    p.add_argument("--x-left", nargs=2, type=float, default=list(GULLY_DEFAULTS["x_left"]),
                    help="左壁搜索横向范围(归一化)")
-    p.add_argument("--x-right", nargs=2, type=float, default=[0.48, 0.78],
+    p.add_argument("--x-right", nargs=2, type=float, default=list(GULLY_DEFAULTS["x_right"]),
                    help="右壁搜索横向范围(归一化)")
-    p.add_argument("--max-jump", type=int, default=40, help="边界追踪每行最大跳变(像素)")
-    p.add_argument("--fill-window", type=int, default=40,
+    p.add_argument("--max-jump", type=int, default=GULLY_DEFAULTS["max_jump"],
+                   help="边界追踪每行最大跳变(像素)")
+    p.add_argument("--fill-window", type=int, default=GULLY_DEFAULTS["fill_window"],
                    help="凹陷填充窗口(行),0=关闭;填掉沟底浅色斑块造成的缺口")
-    p.add_argument("--extend-start", type=float, default=0.70,
+    p.add_argument("--extend-start", type=float, default=GULLY_DEFAULTS["extend_start"],
                    help="底部延伸起点(归一化 y),从这里向下张开覆盖堆积体")
-    p.add_argument("--extend-end", type=float, default=0.99, help="底部延伸终点(归一化 y)")
-    p.add_argument("--extend-expand", type=float, default=0.26,
+    p.add_argument("--extend-end", type=float, default=GULLY_DEFAULTS["extend_end"],
+                   help="底部延伸终点(归一化 y)")
+    p.add_argument("--extend-expand", type=float, default=GULLY_DEFAULTS["extend_expand"],
                    help="底部延伸时每侧张开量(占图像宽比例)")
     return p.parse_args()
 
@@ -242,13 +261,22 @@ def darkrun_mask(bgr, y_range=(0.20, 0.84), x_band=(0.14, 0.86), center_band=(0.
     return gully, debris
 
 
-def detect_gully(bgr, y_range=(0.20, 0.93), x_left=(0.18, 0.52), x_right=(0.48, 0.78),
-                 max_jump=40, method="darkrun", fill_window=40,
-                 extend_start=0.70, extend_end=0.99, extend_expand=0.26):
+def detect_gully(bgr, y_range=None, x_left=None, x_right=None, max_jump=None,
+                 method=None, fill_window=None, extend_start=None, extend_end=None,
+                 extend_expand=None):
     """自动检测中央沟壑。返回 dict(mask, color_mask, edge_mask, left, right, seeds)。
 
-    可被 features.py 复用(把检测到的沟壑当 ROI)。
+    参数为 None 时取 GULLY_DEFAULTS(与 CLI 完全一致)。可被 features.py / GUI 复用。
     """
+    o = dict(GULLY_DEFAULTS)
+    o.update({k: v for k, v in dict(
+        y_range=y_range, x_left=x_left, x_right=x_right, max_jump=max_jump, method=method,
+        fill_window=fill_window, extend_start=extend_start, extend_end=extend_end,
+        extend_expand=extend_expand).items() if v is not None})
+    y_range, x_left, x_right = o["y_range"], o["x_left"], o["x_right"]
+    max_jump, method, fill_window = o["max_jump"], o["method"], o["fill_window"]
+    extend_start, extend_end, extend_expand = o["extend_start"], o["extend_end"], o["extend_expand"]
+
     H, W = bgr.shape[:2]
     y0, y1 = int(y_range[0] * H), int(y_range[1] * H)
     lx0, lx1 = int(x_left[0] * W), int(x_left[1] * W)

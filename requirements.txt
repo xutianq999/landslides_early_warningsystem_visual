@@ -7,3 +7,4 @@ openpyxl          # 特征导出 Excel(export_features_excel.py)
 pandas            # 报警分析(alarm.py)与数据库出表
 fastapi           # 本地数据 API(api.py)
 uvicorn           # API 服务运行时
+PySide6           # 桌面工作台(studio.py)

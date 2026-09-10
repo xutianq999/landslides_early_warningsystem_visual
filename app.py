@@ -31,9 +31,7 @@ DEVICE_INFO_HINT = ("选择设备号后,自动套用该点位的类别/FOV/ROI �
 
 def device_choices() -> list[str]:
     """下拉框选项:配置里登记过的设备号 ∪ 当前生效设备号"""
-    ids = set((config.CONFIG.get("devices") or {}).keys())
-    ids.add(config.CONFIG["device_id"])
-    return sorted(ids)
+    return config.device_ids()
 
 
 def apply_device(device):

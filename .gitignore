@@ -19,10 +19,12 @@ __pycache__/
 .pytest_cache/
 
 # ---- 生成的产物(可随时重跑生成)----
-data/            # SQLite 数据库
-images/          # 网页端抓图落盘目录
-config.json      # 现场配置(从 config.example.json 复制)
-capture.log      # 抓图服务日志
+# SQLite 数据库 / 网页端抓图目录
+data/
+images/
+# 现场配置(含相机口令)与运行日志 —— 绝不入库
+config.json
+capture.log
 pointclouds/
 *_pointcloud.ply
 *_mesh.ply
