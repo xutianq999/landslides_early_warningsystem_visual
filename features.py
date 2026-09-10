@@ -53,6 +53,12 @@ def parse_args():
     p.add_argument("--lat", type=float, help="纬度,在线拉取降雨(Open-Meteo)")
     p.add_argument("--lon", type=float, help="经度,在线拉取降雨")
     p.add_argument("--time", help="本帧时间(如 2026-09-09T09:00),默认取文件名/文件时间")
+    p.add_argument("--roi", nargs=4, type=float, metavar=("X1", "Y1", "X2", "Y2"),
+                   help="归一化 ROI(如 0.28 0.18 0.72 0.98),只在该区域内算特征")
+    p.add_argument("--roi-auto", action="store_true",
+                   help="自动检测中央沟壑(segment_gully)并作为 ROI")
+    p.add_argument("--roi-target", choices=["gully", "debris", "both"], default="gully",
+                   help="配合 --roi-auto:用沟壑 / 底部堆积体 / 两者合并作为 ROI")
     p.add_argument("--no-seg", action="store_true", help="跳过分割(也跳过动态掩码剔除)")
     return p.parse_args()
 
@@ -161,9 +167,13 @@ def depth_features(disp01: np.ndarray, ignore: np.ndarray | None = None) -> dict
 
 def geometry_features(pil: Image.Image, disp01: np.ndarray, max_depth: float, fov: float,
                       ignore: np.ndarray | None = None) -> dict:
-    """反投影点云 → 三维几何特征(坡度/粗糙度/曲率/主平面/鼓胀)。"""
+    """反投影点云 → 三维几何特征(坡度/粗糙度/曲率/主平面/鼓胀)。
+
+    注意:坡度绝对值受 DA V2 仿射歧义影响(有系统偏差),但**单调可区分**陡缓;
+    监测看时间序列变化。详见 PIPELINE.md 与 validate_features.py 的 T1 测试。
+    """
     keys = ("slope_mean", "slope_p95", "rough_local", "curv_mean",
-            "plane_tilt", "plane_rms", "plane_skew", "bulge_frac", "edge_depth_corr")
+            "plane_tilt", "plane_rms", "bulge_frac", "edge_depth_corr")
     empty = {k: np.nan for k in keys}
 
     pts, _, valid = backproject(pil, disp01, max_depth=max_depth, fov_deg=fov)
@@ -219,21 +229,23 @@ def geometry_features(pil: Image.Image, disp01: np.ndarray, max_depth: float, fo
     dist = X @ n_plane
     rms = float(np.sqrt((dist ** 2).mean())) + 1e-9
     tilt = float(np.degrees(np.arccos(np.clip(abs(n_plane @ np.array([0.0, 1.0, 0.0])), 0, 1))))
-    skew = float((dist ** 3).mean() / rms ** 3)
 
     return {
         "slope_mean": float(s.mean()), "slope_p95": float(np.percentile(s, 95)),
         "rough_local": rough, "curv_mean": curv,
         "plane_tilt": tilt, "plane_rms": float(rms / (max_depth + 1e-6)),
-        "plane_skew": skew, "bulge_frac": bulge, "edge_depth_corr": corr,
+        "bulge_frac": bulge, "edge_depth_corr": corr,
     }
 
 
 # ---------------------------------------------------------------- ④ 时序层(帧间)
 
 def align_and_diff(prev: tuple[np.ndarray, np.ndarray], cur: tuple[np.ndarray, np.ndarray],
-                   ignore: np.ndarray | None = None) -> dict:
-    """配准上一帧到当前帧(相位相关),统计深度差。动态物体区域排除。"""
+                   ignore: np.ndarray | None = None, scale: float = 1.0) -> dict:
+    """配准上一帧到当前帧(相位相关),统计深度差。动态物体区域排除。
+
+    scale: 配准图相对原图的分辨率比例(原图宽/配准图宽),用于把位移换算回原图像素。
+    """
     g_prev, d_prev = prev
     g_cur, d_cur = cur
     g_prev = cv2.resize(g_prev, g_cur.shape[::-1])
@@ -250,18 +262,67 @@ def align_and_diff(prev: tuple[np.ndarray, np.ndarray], cur: tuple[np.ndarray, n
     else:
         diff = diff.ravel()
     return {
-        "shift_px": float(np.hypot(sx, sy)),      # 相机漂移/被碰动,本身即告警
-        "shift_resp": float(resp),                # 配准可靠度,低则该帧变化特征不可信
+        "shift_px": float(np.hypot(sx, sy) * scale),  # 换算回原图像素;相机漂移本身即告警
+        "shift_resp": float(resp),                    # 配准可靠度,低则该帧变化特征不可信
         "diff_mean": float(diff.mean()),
         "diff_p95": float(np.percentile(diff, 95)),
-        "diff_frac": float((diff > 0.10).mean()),  # 深度变化超 10% 的面积占比
+        "diff_frac": float((diff > 0.10).mean()),     # 深度变化超 10% 的面积占比
+    }
+
+
+def roi_mask_from_args(pil: Image.Image, roi: list[float] | None) -> np.ndarray | None:
+    """归一化 ROI (x1,y1,x2,y2) → 图像尺寸的布尔掩码;None 表示全图"""
+    if roi is None:
+        return None
+    W, H = pil.size
+    x1, y1, x2, y2 = roi
+    m = np.zeros((H, W), bool)
+    m[int(y1 * H):int(y2 * H), int(x1 * W):int(x2 * W)] = True
+    return m
+
+
+def mask_shape_features(mask: np.ndarray | None, prefix: str) -> dict:
+    """掩码形状特征:面积、x 方向宽度(最小/最大/波动)、y 方向纵深。
+
+    宽度按行统计(逐行左右边界之差),只统计宽度 ≥1% 图宽的有效行(避免边缘毛刺行被当成最小值)。
+    y 方向给出顶/底位置和纵深跨度,都按图像高归一化。
+    """
+    keys = [f"{prefix}_{k}" for k in
+            ("area_frac", "width_min", "width_max", "width_std", "y_top", "y_bottom", "y_extent")]
+    if mask is None:
+        return {k: np.nan for k in keys}
+    m = mask > 0
+    if not m.any():
+        return {k: 0.0 for k in keys}
+    W, H = mask.shape[1], mask.shape[0]
+    widths = m.sum(1).astype(float)      # 每行宽度(像素)
+    valid = widths >= 0.01 * W           # 只统计有效行
+    nz = np.where(valid)[0]
+    if nz.size == 0:
+        nz = np.where(widths > 0)[0]
+    w = widths[nz]
+    return {
+        f"{prefix}_area_frac": float(m.mean()),
+        f"{prefix}_width_min": float(w.min()) / W,
+        f"{prefix}_width_max": float(w.max()) / W,
+        f"{prefix}_width_std": float(w.std()) / W,   # 宽度沿纵深的波动
+        f"{prefix}_y_top": float(nz.min()) / H,
+        f"{prefix}_y_bottom": float(nz.max()) / H,
+        f"{prefix}_y_extent": float(nz.max() - nz.min()) / H,
     }
 
 
 def features_from_image(pil: Image.Image, classes: list[str] | None = None, conf: float = 0.15,
                         max_depth: float = 10.0, fov: float = 60.0, prev: tuple | None = None,
-                        use_seg: bool = True):
-    """一张 PIL 图 → (30 项特征 dict, 供下一帧配准的 (gray, disp))。网页/命令行共用。"""
+                        use_seg: bool = True, mask_dynamic: bool = True,
+                        roi: list[float] | None = None, roi_mask: np.ndarray | None = None,
+                        extra_masks: dict | None = None):
+    """一张 PIL 图 → (30 项特征 dict, 供下一帧配准的 (gray, disp))。网页/命令行共用。
+
+    mask_dynamic=False 可关闭动态物体剔除(仅用于验证剔除效果)。
+    roi: 归一化 (x1,y1,x2,y2) 矩形;roi_mask: 直接给图像尺寸的布尔掩码(如自动检测的沟壑)。
+    两者都给时 roi_mask 优先。
+    """
     classes = classes or [c.strip() for c in DEFAULT_CLASSES.split(",") if c.strip()]
 
     # ① 图像层:先分割,拿到动态物体掩码
@@ -269,7 +330,13 @@ def features_from_image(pil: Image.Image, classes: list[str] | None = None, conf
     ignore = None
     if use_seg:
         seg_stats, masks = segment(pil, classes, conf)
-        ignore = dynamic_mask(masks, (pil.size[1], pil.size[0]))
+        if mask_dynamic:
+            ignore = dynamic_mask(masks, (pil.size[1], pil.size[0]))
+
+    # ROI:区域外的像素全部忽略(几何/深度/时序只在 ROI 内统计)
+    roi_m = roi_mask if roi_mask is not None else roi_mask_from_args(pil, roi)
+    if roi_m is not None:
+        ignore = ~roi_m if ignore is None else (ignore | ~roi_m)
 
     # ② 深度层
     depth = np.array(get_model("da2s")(pil)["predicted_depth"])
@@ -278,15 +345,18 @@ def features_from_image(pil: Image.Image, classes: list[str] | None = None, conf
     row = {}
     row.update(image_quality(pil))
     row.update(seg_stats)
+    for name, m in (extra_masks or {}).items():  # 各掩模(沟壑/堆积体)的面积与最大宽度
+        row.update(mask_shape_features(m, name))
     row.update(depth_features(disp01, ignore))
     row.update(geometry_features(pil, disp01, max_depth, fov, ignore))
 
     # ④ 时序层
     gray = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2GRAY)
+    scale = pil.size[0] / 640.0  # 配准图固定 640 宽,位移需换算回原图像素
     gray = cv2.resize(gray, (640, int(640 * gray.shape[0] / gray.shape[1])))
     cur = (gray, cv2.resize(disp01.astype(np.float32), (gray.shape[1], gray.shape[0])))
     if prev is not None:
-        row.update(align_and_diff(prev, cur, ignore))
+        row.update(align_and_diff(prev, cur, ignore, scale))
     else:
         row.update({k: np.nan for k in ("shift_px", "shift_resp", "diff_mean",
                                         "diff_p95", "diff_frac")})
@@ -336,9 +406,19 @@ def collect_images(input_path: str) -> list[Path]:
 def extract_one(path: Path, args, prev: tuple | None) -> tuple[dict, tuple]:
     pil = Image.open(path).convert("RGB")
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
+    roi_mask, extra_masks = None, None
+    if getattr(args, "roi_auto", False):
+        import segment_gully
+        bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        res = segment_gully.detect_gully(bgr)
+        target = getattr(args, "roi_target", "gully")
+        key = {"gully": "mask", "debris": "debris", "both": "mask_all"}[target]
+        roi_mask = res[key] > 0
+        extra_masks = {"gully": res["mask"], "debris": res["debris"]}
     row, cur = features_from_image(pil, classes=classes, conf=args.conf,
                                    max_depth=args.max_depth, fov=args.fov, prev=prev,
-                                   use_seg=not args.no_seg)
+                                   use_seg=not args.no_seg, roi=args.roi, roi_mask=roi_mask,
+                                   extra_masks=extra_masks)
     out = {"time": frame_time(path, args.time).isoformat(timespec="seconds"), "image": path.name}
     out.update(row)
     if args.weather_csv:

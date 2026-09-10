@@ -33,27 +33,35 @@ def get_model(name):
     return m
 
 
-def backproject(pil, disp01, max_depth=10.0, fov_deg=60.0, max_points=1_500_000):
-    """相对深度(0~1,越大越近)→ 相机坐标系点云。
+def backproject(pil, disp01, max_depth=10.0, fov_deg=60.0, max_points=1_500_000, offset=0.0):
+    """相对深度(视差,越大越近)→ 相机坐标系点云。
 
     返回 (pts (h,w,3), cols (h,w,3), valid (h,w))。保留网格结构,网格导出要用拓扑。
-    DA V2 无绝对尺度:针孔模型反投影,水平 FOV 定焦距,z 按 1/(disp+0.1) 归一化到 max_depth。
+
+    **关键**:z 必须由原始视差直接反演(z = 1/视差),不能先归一化到 [0,1] 再加偏移。
+    归一化等价于给视差加了一个未知平移,会让陡坡的坡度饱和(实测:先归一化再加 0.02 偏移时,
+    30° 以上全部塌到 23.8°;直接反演则 30°/45°/60°/75° 精确还原)。
+    offset 是可选相机常数(视差单位):DA V2 存在仿射歧义 d = a/z + b,若能标定出 b 可传入。
     """
     W, H = pil.size
-    # 超点数上限时隔行抽稀。注意全程浮点:量化成 8 位会让远端相邻级被 1/(d+c) 放大成波纹等高线
+    # 超点数上限时隔行抽稀
     step = max(1, int(np.ceil(max(H, W) / np.sqrt(max_points))))
     disp = Image.fromarray(disp01.astype(np.float32), mode="F").resize(pil.size, Image.BILINEAR)
-    disp = np.array(disp)[::step, ::step]
+    disp = np.array(disp)[::step, ::step].astype(np.float32)
     rgb = np.array(pil)[::step, ::step, :3]
 
-    # 分位截断防离群点撑爆范围
-    lo, hi = np.percentile(disp, 2), np.percentile(disp, 98)
-    disp = np.clip((disp - lo) / (hi - lo + 1e-6), 0, 1)
+    # 无效值(0/NaN,如天空或无纹理区)不能当作"最远平面",否则 p2 被拉到 0 会让 z 整体塌缩
+    finite = np.isfinite(disp) & (disp > 0)
+    if finite.sum() < 100:  # 极端兜底:全图几乎无有效值
+        finite = np.isfinite(disp)
+    ref = disp[finite]
+    lo, hi = np.percentile(ref, 2), np.percentile(ref, 98)
+    disp = np.clip(np.where(finite, disp, lo), lo, hi) - offset
     # 双边滤波:压深度噪声同时保住物体边界(高斯会把边界糊成斜面,点云上表现为拉伸的尖刺)
     import cv2
-    disp = cv2.bilateralFilter(disp, d=7, sigmaColor=0.08, sigmaSpace=7)
+    disp = cv2.bilateralFilter(disp, d=7, sigmaColor=0.08 * (hi - lo + 1e-6), sigmaSpace=7)
 
-    z = 1.0 / (disp + 0.1)  # 逆深度 → 深度;+0.1 限制远端拉伸倍率
+    z = 1.0 / np.maximum(disp, 1e-6)  # 视差直接反演;不减去远平面视差(那会压平陡坡)
     z = z / z.max() * max_depth  # 近似米制:最远 = max_depth
     fx = 0.5 * W / np.tan(np.radians(fov_deg) / 2)
     cx, cy = W / 2, H / 2
@@ -62,18 +70,20 @@ def backproject(pil, disp01, max_depth=10.0, fov_deg=60.0, max_points=1_500_000)
     x = u[None, :] * z / fx
     y = -v[:, None] * z / fx  # 图像行方向向下,翻正成世界坐标的"上"
 
-    valid = z < max_depth * 0.999  # 贴最远平面的点无意义
+    valid = finite & (z < max_depth * 0.999)  # 无效区与贴最远平面的点都不参与
     pts = np.stack([x, y, z], axis=-1)
-    pts = pts - np.median(pts[valid], axis=0)  # 平移到质心,便于查看器自动取景
+    # 注意:返回的是相机坐标系(未平移)。平移会让近处 z 变负,破坏依赖正值假设的
+    # 深度断裂判断(max < min×2);需要居中显示的调用方(点云/网格导出)自行平移。
     return pts, rgb, valid
 
 
 def export_pointcloud(pil, disp01, max_depth=10.0, fov_deg=60.0, max_points=1_500_000,
                       out_dir="pointclouds", stem=None):
-    """点云导出(离散点)。"""
+    """点云导出(离散点)。导出前平移到质心,便于查看器自动取景。"""
     pts, cols, valid = backproject(pil, disp01, max_depth, fov_deg, max_points)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{_stem(pil, stem)}_pointcloud.ply")
+    pts = pts - np.median(pts[valid], axis=0)
     write_ply(path, pts[valid], cols[valid])
     return path
 
@@ -108,6 +118,7 @@ def export_mesh(pil, disp01, max_depth=10.0, fov_deg=60.0, max_points=1_500_000,
 
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{_stem(pil, stem)}_mesh.ply")
+    pts = pts - np.median(pts[valid], axis=0)
     write_ply(path, pts[valid], cols[valid], faces)
     return path
 

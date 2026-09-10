@@ -39,6 +39,21 @@ DOCS = {
     # ① 图像层
     "img_brightness": ("图像质量", "平均亮度(噪声门控:太暗/过曝的帧不可信)", "0~1", "低于 0.12 或高于 0.95 应剔除"),
     "img_blur": ("图像质量", "拉普拉斯方差(越大越清晰,门控失焦)", "≥40 可用", "过小=失焦/雨雾,剔除该帧"),
+    # 区域掩模(仅 --roi-auto 时)
+    "gully_area_frac": ("区域掩模", "沟壑掩模面积占全图比例", "0~1", "扩大=沟壑在扩张/侧壁失稳"),
+    "gully_width_min": ("区域掩模", "沟壑最小宽度(仅统计宽度≥1%图宽的有效行)", "0~1(占图宽)", "持续减小=沟壑收窄/被堵塞"),
+    "gully_width_max": ("区域掩模", "沟壑最大宽度(逐行左右边界差的最大值)", "0~1(占图宽)", "增大=沟壑变宽"),
+    "gully_width_std": ("区域掩模", "沟壑宽度沿纵深的波动(标准差)", "0~1(占图宽)", "增大=沟壑形状不规则化"),
+    "gully_y_top": ("区域掩模", "沟壑掩模顶端位置(归一化 y)", "0~1", "上移=沟壑向上溯源侵蚀"),
+    "gully_y_bottom": ("区域掩模", "沟壑掩模底端位置(归一化 y)", "0~1", "下移=沟壑向下延伸"),
+    "gully_y_extent": ("区域掩模", "沟壑纵向跨度(y_bottom − y_top)", "0~1", "增大=沟壑纵深变长"),
+    "debris_area_frac": ("区域掩模", "底部堆积体掩模面积占比", "0~1", "增大=堆积体增长"),
+    "debris_width_min": ("区域掩模", "堆积体最小宽度(有效行)", "0~1(占图宽)", "减小=堆积体收缩"),
+    "debris_width_max": ("区域掩模", "堆积体最大宽度", "0~1(占图宽)", "增大=堆积体横向扩张"),
+    "debris_width_std": ("区域掩模", "堆积体宽度沿纵深的波动", "0~1(占图宽)", "增大=堆积体形状不规则化"),
+    "debris_y_top": ("区域掩模", "堆积体顶端位置(归一化 y)", "0~1", "上移=堆积体向坡上扩展"),
+    "debris_y_bottom": ("区域掩模", "堆积体底端位置(归一化 y)", "0~1", "—"),
+    "debris_y_extent": ("区域掩模", "堆积体纵向跨度", "0~1", "增大=堆积体纵向增长"),
     # ② 深度层
     "disp_p05": ("深度分布", "归一化逆深度(视差)5% 分位,越小越远", "0~1", "下降=画面中远处占比变大"),
     "disp_p50": ("深度分布", "视差中位数(整体远近)", "0~1", "双向变化都值得关注"),
@@ -51,7 +66,6 @@ DOCS = {
     "curv_mean": ("三维几何", "曲率均值(深度拉普拉斯归一化)", "0~1", "增大=局部凹凸加剧"),
     "plane_tilt": ("三维结构", "PCA 主平面倾角", "度 0~90", "增大=整体坡面变陡"),
     "plane_rms": ("三维结构", "相对主平面的归一化残差(平整度)", "0~1", "增大=表面解体/不平整"),
-    "plane_skew": ("三维结构", "主平面上下偏斜度(法向固定朝上)", "无量纲", "绝对值增大=异常;正=隆起堆积,负=塌陷缺失"),
     "bulge_frac": ("三维结构", "凸起(朝相机外凸)面积占比", "0~1", "上升是坡脚鼓胀的经典前兆"),
     "edge_depth_corr": ("可信度", "图像边缘与深度边缘的相关系数", "-1~1", "接近 0 说明该帧深度不可信,应降权"),
     # ④ 时序层
@@ -194,11 +208,81 @@ def build(rows, out_path):
     return out_path, len(fields), len(rows)
 
 
+def static_field_list():
+    """不跑推理,直接从 features.py 的定义推导出全部字段(与运行结果一致)。"""
+    import features as F
+    fields = ["img_brightness", "img_blur"]
+    for p in ("gully", "debris"):
+        fields += [f"{p}_area_frac", f"{p}_width_min", f"{p}_width_max", f"{p}_width_std",
+                   f"{p}_y_top", f"{p}_y_bottom", f"{p}_y_extent"]
+    for c in [x.strip() for x in F.DEFAULT_CLASSES.split(",")]:
+        if c in F.STATIC_CLASSES:
+            fields += [f"seg_{c}_frac", f"seg_{c}_max"]
+    for c in [x.strip() for x in F.DEFAULT_CLASSES.split(",")]:
+        if c in F.DYNAMIC_CLASSES:
+            fields += [f"seg_{c}_n"]
+    fields += ["disp_p05", "disp_p50", "disp_p95", "disp_std",
+               "slope_mean", "slope_p95", "rough_local", "curv_mean",
+               "plane_tilt", "plane_rms", "bulge_frac", "edge_depth_corr",
+               "shift_px", "shift_resp", "diff_mean", "diff_p95", "diff_frac",
+               "rain_1h", "rain_24h", "rain_72h"]
+    return fields
+
+
+def build_fields_only(fields, out_path):
+    """只输出字段清单(无本次值),用于挑选特征。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "字段清单"
+    headers = ["序号", "字段名", "类别", "含义", "单位/范围", "危险方向", "保留(Y/N)", "备注"]
+    last_col = len(headers) + 1
+    base.setup_sheet(ws, title="滑坡监测特征字段清单", last_col=last_col)
+    for c, h in enumerate(headers, 2):
+        ws.cell(row=4, column=c, value=h)
+    base.style_header_row(ws, row_num=4, col_start=2, col_end=last_col)
+
+    for i, name in enumerate(fields):
+        r = 5 + i
+        cat, meaning, unit, danger = field_doc(name)
+        for c, v in enumerate([i + 1, name, cat, meaning, unit, danger, "", ""], 2):
+            ws.cell(row=r, column=c, value=v)
+        base.style_data_row(ws, row_num=r, col_start=2, col_end=last_col, row_index=i)
+
+    dv = DataValidation(type="list", formula1='"Y,N"', allow_blank=True)
+    dv.prompt = "选 Y 保留该特征 / N 剔除"
+    ws.add_data_validation(dv)
+    dv.add(f"G5:G{4 + len(fields)}")
+
+    for col, width in zip(range(2, last_col + 1), [6, 20, 12, 48, 14, 34, 11, 20]):
+        ws.column_dimensions[get_column_letter(col)].width = width
+    base.auto_fit_row_heights(ws, header_row=4, data_start_row=5, data_end_row=4 + len(fields))
+
+    note_row = 5 + len(fields) + 2
+    for j, line in enumerate(NOTES):
+        cell = ws.cell(row=note_row + j, column=2, value=line)
+        cell.font = base.font_caption() if j else Font(
+            name=base.FONT_NAME, size=10, bold=True, color=base.PRIMARY)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.freeze_panes = "C5"
+    ws.sheet_view.showGridLines = False
+
+    wb.properties.creator = "Z.ai"
+    wb.save(out_path)
+    return out_path, len(fields)
+
+
 def main():
     ap = argparse.ArgumentParser(description="特征导出 Excel")
     ap.add_argument("image", nargs="?", default="3.jpg", help="features.csv 不存在时用这张图跑一次提取")
     ap.add_argument("-o", "--out", default="features.xlsx")
+    ap.add_argument("--fields-only", action="store_true",
+                    help="只输出字段清单(不跑推理、不含数值)")
     args = ap.parse_args()
+
+    if args.fields_only:
+        path, n_fields = build_fields_only(static_field_list(), args.out)
+        print(f"已生成 {path}:{n_fields} 个字段(仅清单,无数值)")
+        return
 
     rows = load_rows(args.image)
     path, n_fields, n_rows = build(rows, args.out)

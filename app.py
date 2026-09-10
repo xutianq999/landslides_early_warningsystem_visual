@@ -155,8 +155,12 @@ MODES = {
 }
 
 
-def ui_extract_features(image, classes_text, prev):
-    """网页端特征提取:一张图 → 特征表 + 累积 CSV,并用 gr.State 记住上一帧做变化检测"""
+def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
+    """网页端特征提取:一张图 → 特征表 + 累积 CSV,并用 gr.State 记住上一帧做变化检测
+
+    roi_auto=True 时先用 segment_gully 自动检测,按 roi_target 选择 ROI:
+    沟壑 / 底部堆积体 / 两者合并。沟壑与堆积体是两个独立掩模(互不重叠)。
+    """
     if image is None:
         raise gr.Error("请先在左侧上传图片")
     import csv as _csv
@@ -165,7 +169,35 @@ def ui_extract_features(image, classes_text, prev):
 
     pil = Image.fromarray(image) if isinstance(image, np.ndarray) else image
     classes = [c.strip() for c in classes_text.split(",") if c.strip()] or None
-    row, cur = F.features_from_image(pil, classes=classes, conf=0.15, prev=prev)
+
+    roi_mask, overlay, extra_masks = None, None, None
+    if roi_auto:
+        import cv2
+        import segment_gully
+        bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        res = segment_gully.detect_gully(bgr)
+        key = {"沟壑": "mask", "堆积体": "debris", "两者": "mask_all"}[roi_target]
+        roi_mask = res[key] > 0
+        extra_masks = {"gully": res["mask"], "debris": res["debris"]}
+        # 叠加预览:沟壑绿、堆积体橙,选中的区域加亮
+        for m, color in ((res["mask"], (0, 255, 0)), (res["debris"], (0, 165, 255))):
+            mm = m > 0
+            if mm.any():
+                tint = np.zeros_like(bgr)
+                tint[:] = color
+                bgr[mm] = (0.5 * bgr[mm] + 0.5 * tint[mm]).astype(np.uint8)
+        sel = res[key] > 0
+        edge = cv2.Canny((sel * 255).astype(np.uint8), 50, 150)
+        bgr[edge > 0] = (255, 0, 0)
+        for y in range(len(res["left"])):
+            if not np.isnan(res["left"][y]):
+                cv2.circle(bgr, (int(res["left"][y]), y), 2, (0, 0, 255), -1)
+            if not np.isnan(res["right"][y]):
+                cv2.circle(bgr, (int(res["right"][y]), y), 2, (255, 0, 0), -1)
+        overlay = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    row, cur = F.features_from_image(pil, classes=classes, conf=0.15, prev=prev,
+                                     roi_mask=roi_mask, extra_masks=extra_masks)
     row = {"time": datetime.now().isoformat(timespec="seconds"), **row}
 
     out = "features.csv"
@@ -179,7 +211,7 @@ def ui_extract_features(image, classes_text, prev):
     def fmt(v):
         return f"{v:.4f}" if isinstance(v, float) and v == v else ("nan" if v != v else str(v))
     table = [[k, fmt(v)] for k, v in row.items()]
-    return table, out, cur
+    return table, out, cur, overlay
 
 
 def run(mode, image, classes_text, conf, export_pc, max_depth, export_fmt):
@@ -227,14 +259,19 @@ with gr.Blocks(title="视觉小工具:零样本分割 + 单目深度") as demo:
         with gr.Column(scale=3):
             gr.Markdown("### 滑坡监测特征\n"
                         "点左侧「提取滑坡特征」→ 这里显示本次特征;连续提取会自动与上一张比对算变化量。"
-                        "识别到的行人/车辆区域会从几何与时序特征中自动剔除,防止人为误差。"
+                        "识别到的行人/车辆区域会从几何与时序特征中自动剔除。"
+                        "勾选「自动检测沟壑」后,几何/深度/时序特征只在中央沟壑区域内计算。"
                         "完整流程见 PIPELINE.md,报警分析用 `alarm.py`。")
             feat_df = gr.Dataframe(headers=["特征", "值"], datatype=["str", "str"],
                                    label="本次特征", interactive=False, wrap=True)
         with gr.Column(scale=1):
             feat_classes = gr.Textbox(value="deep valley,person,car,landslide,truck,construction vehicle",
                                       label="分割类别(动态物体区域会自动从几何特征中剔除)")
+            feat_roi_auto = gr.Checkbox(value=False, label="自动检测沟壑(只用检测到的区域算特征)")
+            feat_roi_target = gr.Radio(["沟壑", "堆积体", "两者"], value="沟壑", label="ROI 目标")
             feat_file = gr.File(label="特征 CSV(累积追加)")
+            feat_gully_img = gr.Image(label="区域检测(绿=沟壑,橙=堆积体,红线=左壁,蓝线=右壁)",
+                                      height=300, interactive=False)
     prev_state = gr.State(None)
 
     # 选非分割模型时隐藏分割专属控件
@@ -243,8 +280,9 @@ with gr.Blocks(title="视觉小工具:零样本分割 + 单目深度") as demo:
                 inputs=mode, outputs=[classes_text, conf])
     btn.click(run, inputs=[mode, input_img, classes_text, conf, export_pc, max_depth, export_fmt],
               outputs=[output_img, output_info, output_file, output_3d])
-    btn_feat.click(ui_extract_features, inputs=[input_img, feat_classes, prev_state],
-                   outputs=[feat_df, feat_file, prev_state])
+    btn_feat.click(ui_extract_features,
+                   inputs=[input_img, feat_classes, prev_state, feat_roi_auto, feat_roi_target],
+                   outputs=[feat_df, feat_file, prev_state, feat_gully_img])
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)

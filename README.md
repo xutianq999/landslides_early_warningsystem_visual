@@ -35,7 +35,8 @@ python3 -m venv .venv                # 已建好可跳过
 
 ## 滑坡监测特征提取(features.py)
 
-从监控抓图提取一行特征向量(30 项)写入 CSV,供 xLSTM 与报警模块使用。
+从监控抓图提取一行特征向量写入 CSV,供 xLSTM 与报警模块使用。
+基础 30 项;加 `--roi-auto`(只在自动检测到的沟壑/堆积体区域算特征)后再加 14 项区域掩模特征,共 44 项。
 **完整流程与报警逻辑见 [PIPELINE.md](PIPELINE.md);字段含义见 [FEATURES.md](FEATURES.md)。**
 
 ```bash
@@ -46,6 +47,19 @@ python3 -m venv .venv                # 已建好可跳过
 # 带降雨(本地 CSV: 两列 time,precip_mm / 或在线拉取 Open-Meteo)
 .venv/bin/python features.py 图片.jpg --weather-csv rain.csv
 .venv/bin/python features.py 图片.jpg --lat 30.1 --lon 104.2
+
+# 只在中央沟壑区域算特征(自动检测,或手动画框)
+.venv/bin/python features.py 图片.jpg --roi-auto
+.venv/bin/python features.py 图片.jpg --roi 0.28 0.18 0.72 0.98
+
+# 沟壑分割可视化(颜色法 / OpenCV 边界追踪 / 混合)
+.venv/bin/python segment_gully.py 图片.jpg -o gully_seg.png
+
+# 三维点云 + 主平面可视化
+.venv/bin/python visualize3d.py 图片.jpg -o pc_plane.png
+
+# 特征有效性验证(几何真值 / 光照扰动 / 已知位移 / 动态剔除)
+.venv/bin/python validate_features.py 图片.jpg
 
 # 报警分析(变化率 + 加速度 + 噪声门控)
 .venv/bin/python alarm.py features.csv --out alarm_result.csv
@@ -61,20 +75,21 @@ python3 -m venv .venv                # 已建好可跳过
 
 | 组 | 特征 | 说明 |
 |---|---|---|
-| 深度统计 | disp_p05/25/50/75/95/std | 归一化**逆深度(视差)**分位数,值越大越近 |
-| 三维几何 | slope_mean/p95/std, rough_local, curv_mean | 点云局部法向量 → 坡度角、粗糙度、曲率 |
-| 三维结构 | plane_tilt, plane_rms, plane_skew | PCA 主平面拟合:倾角、归一化残差、上下偏斜(堆积/缺失) |
-| 三维结构 | aspect_entropy, area_ratio, bulge_frac, hollow_frac | 法向方位分布熵(破碎度)、表面积/投影面积比(起伏度)、凸起/凹陷占比 |
+| 深度统计 | disp_p05/p50/p95/std | 归一化**逆深度(视差)**分位数,值越大越近 |
+| 三维几何 | slope_mean/p95, rough_local, curv_mean | 点云局部法向量 → 坡度角、粗糙度、曲率 |
+| 三维结构 | plane_tilt, plane_rms | PCA 主平面拟合:倾角、归一化残差(平整度) |
+| 三维结构 | bulge_frac | 凸起(朝相机外凸)面积占比,上升是坡脚鼓胀前兆 |
 | 深度可信度 | edge_depth_corr | 图像边缘与深度边缘相关性 |
-| 分割 | seg_<类>_frac/_n/_max | YOLOE 类别像素占比/个数/最大连通域占比 |
-| 变化 | shift_px_x/y, shift_resp, diff_mean/p95/frac | 与上一帧的配准位移 + 深度差统计 |
+| 分割 | seg_<类>_frac/_max/_n | YOLOE 类别像素占比/最大连通域占比/实例个数 |
+| 区域掩模 | gully_* / debris_* 的 area_frac, width_min/max/std, y_top/bottom/extent | 仅 `--roi-auto`:沟壑与堆积体掩模的尺寸与位置(14 项) |
+| 变化 | shift_px, shift_resp, diff_mean/p95/frac | 与上一帧的配准位移 + 深度差统计 |
 | 降雨 | rain_1h/24h/72h | 抓图时刻前累积降雨(mm) |
 
 **每个字段的详细含义、单位、危险方向见 [FEATURES.md](FEATURES.md)。**
 
 **重要局限(实测结论)**:
 - **尺度未标定**:单帧坡度有仿射系统偏差(`d = a/z + b` 里的 `b` 被忽略),越远越明显;但同一相机下偏差恒定,**时间序列的变化量可靠**。位移目前只能用像素单位。
-- **YOLOE 零样本认不出"裂缝"**:实测对 crack/debris/裸土等细结构概念检出为 0,只对 rock/tree/grass 等实体名词有效,故默认类别为 `rock,tree,grass,water,road`。裂缝监测需另做边缘/线检测或微调模型。
+- **YOLOE 零样本认不出"裂缝"**:实测对 crack/debris/裸土等细结构概念检出为 0,只对 rock/tree/grass/deep valley 等实体名词有效。`features.py` 默认类别为 `deep valley,person,car,landslide,truck,construction vehicle`(deep valley/landslide 计面积,person/car/truck/construction vehicle 只计数并用作动态掩码)。裂缝/沟壑这类细结构改由 `segment_gully.py` 的经典 CV 检测(`--roi-auto`),不依赖模型。
 - **无标签时建议把 xLSTM 用作"特征向量下一步预测器"**:预测残差(实际 vs 预测的偏离)就是异常分,不需要灾害标签;降雨特征用来解释天气引起的图像变化,降低误报。
 
 ## 命令行脚本
@@ -144,7 +159,11 @@ python3 -m venv .venv                # 已建好可跳过
 ```
 core.py                共享内核:设备/模型懒加载/反投影/PLY 导出(app、features、demo 共用)
 app.py                 网页推理台(Gradio)
-features.py            滑坡监测特征提取(30 项)→ CSV
+features.py            滑坡监测特征提取(30 项,ROI 模式 44 项)→ CSV,支持 --roi/--roi-auto
+segment_gully.py       沟壑分割:颜色阈值 + OpenCV 逐行边界追踪
+segment_color.py       Lab 颜色 K-means 分割主坡体(实验性)
+visualize3d.py         点云 + 主平面可视化(含 ROI 与侧视图)
+validate_features.py   特征有效性验证(合成真值 / 扰动 / 位移 / 动态剔除)
 alarm.py               实时报警:变化率/加速度/噪声门控 → 分级
 export_features_excel.py  特征导出 Excel(字段清单 + 原始数据)
 PIPELINE.md            四层数据源与报警流程说明

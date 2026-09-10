@@ -22,10 +22,14 @@ pointclouds/
 *_mesh.ply
 *_depth.png
 *_result.jpg
+*_result.png
+gully_*.png
+pc_plane.png
 compare_out.png
 features.csv
 alarm_result.csv
 features.xlsx
+features_*.xlsx
 app_server.log
 
 # ---- 已弃用的模型与脚本(备份,不入库)----

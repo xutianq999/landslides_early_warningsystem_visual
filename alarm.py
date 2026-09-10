@@ -24,7 +24,6 @@ SIGNALS = [
     ("diff_frac", 3.0, +1),        # 深度变化面积占比 —— 形变核心指标
     ("bulge_frac", 2.5, +1),       # 坡脚鼓胀
     ("seg_landslide_frac", 2.0, +1),  # 滑坡区域面积
-    ("plane_skew", 1.5, 0),        # 主平面偏斜(隆起/缺失,双向)
     ("rough_local", 1.5, +1),      # 表面破碎化
     ("slope_mean", 1.0, +1),       # 坡度
     ("plane_rms", 1.0, +1),        # 平整度残差

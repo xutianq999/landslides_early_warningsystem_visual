@@ -17,6 +17,8 @@
 │   YOLOE 零样本分割:                                           │
 │     deep valley / landslide → 滑坡区域面积、最大连通块          │
 │     person / car / truck / construction vehicle → 动态物体掩码  │
+│   segment_gully(经典 CV,不用模型,可选):                     │
+│     中央沟壑 / 底部堆积体 → ROI + gully_*/debris_* 形状特征     │
 └──────────────────────────────────────────────────────────────┘
    ▼ 动态物体掩码
 ┌──────────────────────────────────────────────────────────────┐
@@ -45,12 +47,18 @@ features.csv(每帧一行,30 项特征)
 
 | 层 | 数据 | 计算方式 | 产出特征 |
 |---|---|---|---|
-| ① 图像 | 原始 RGB | YOLOE 零样本分割 | `seg_landslide_frac/_max`、`seg_deep valley_frac/_max`、动态物体计数 `seg_*_n` |
+| ① 图像 | 原始 RGB | YOLOE 零样本分割;可选 `segment_gully` 经典 CV | `seg_landslide_frac/_max`、`seg_deep valley_frac/_max`、动态物体计数 `seg_*_n`;ROI 模式再加 `gully_*` / `debris_*` |
 | ② 深度 | DA V2 相对深度 | 归一化逆深度(视差)统计 | `disp_p05/p50/p95/std` |
-| ③ 点云 | 深度反投影 | 局部法向量、PCA 主平面 | `slope_mean/p95`、`rough_local`、`curv_mean`、`plane_tilt/rms/skew`、`bulge_frac` |
+| ③ 点云 | 深度反投影 | 局部法向量、PCA 主平面 | `slope_mean/p95`、`rough_local`、`curv_mean`、`plane_tilt/rms`、`bulge_frac` |
 | ④ 时序 | 前后帧配准 | 相位相关 + 深度差 | `diff_mean/p95/frac`、`shift_px`、`shift_resp` |
 
 **为什么要有四层**:图像层看"表面有没有变",深度层看"远近结构有没有变",点云层看"三维形状有没有变",时序层看"变得有多快"。单看任何一层都容易误判。
+
+**ROI 模式(可选)**:加 `--roi-auto`(网页端勾选「自动检测沟壑」)后,先用 `segment_gully.py`
+的经典 CV(默认逐行 Otsu 暗带追踪)分出中央沟壑与底部堆积体两个互斥掩模,选定其中一个
+(`--roi-target gully|debris|both`)作为 ROI,**深度层与点云层只在该区域内统计**(ROI 外像素全部忽略),
+两个掩模本身的面积/宽度/位置作为 `gully_*` / `debris_*` 形状特征一并写入。这样能把计算聚焦在
+真正关心的坡体上,减少两侧崖面与天空的干扰。字段说明见 [FEATURES.md](FEATURES.md)。
 
 ---
 
@@ -109,7 +117,6 @@ a = 0.5·clip(持续偏离, 0, 5)      ← 相对固定参考期的偏离(慢速
 | `diff_frac` | 3.0 | 升 | 深度变化面积占比(形变核心) |
 | `bulge_frac` | 2.5 | 升 | 坡脚鼓胀 |
 | `seg_landslide_frac` | 2.0 | 升 | 滑坡区域面积 |
-| `plane_skew` | 1.5 | 双向 | 主平面偏斜(隆起/塌陷) |
 | `rough_local` | 1.5 | 升 | 表面破碎化 |
 | `slope_mean` | 1.0 | 升 | 坡度 |
 | `plane_rms` | 1.0 | 升 | 平整度残差 |
