@@ -10,6 +10,7 @@
 用法:
     .venv/bin/python alarm.py features.csv [--out alarm_result.csv]
     .venv/bin/python alarm.py features.csv --window 48 --persist 3 --json
+    .venv/bin/python alarm.py --db                     # 从 SQLite 取最近 500 帧重算并写回
 """
 
 import argparse
@@ -52,6 +53,11 @@ def parse_args():
     p.add_argument("--t2", type=float, default=3.0, help="橙色阈值")
     p.add_argument("--t3", type=float, default=5.0, help="红色阈值")
     p.add_argument("--json", action="store_true", help="同时打印最新一条的 JSON")
+    p.add_argument("--db", nargs="?", const="", default=None, metavar="PATH",
+                   help="从 SQLite 读特征并把报警写回(可选路径;只写 --db 用 config 默认)")
+    p.add_argument("--device", help="DB 模式的设备 ID(默认取 config)")
+    p.add_argument("--limit", type=int, default=500,
+                   help="DB 模式:只重算最近 N 帧(报警依赖全序列,取尾部窗口即可)")
     return p.parse_args()
 
 
@@ -163,13 +169,25 @@ def analyze(df: pd.DataFrame, window: int, persist: int,
 
 def main():
     args = parse_args()
-    try:
-        df = pd.read_csv(args.csv)
-    except FileNotFoundError:
-        sys.exit(f"找不到 {args.csv};先用 features.py 生成特征")
 
-    if len(df) == 0:
-        sys.exit("特征表为空")
+    conn = None
+    device = None
+    if args.db is not None:
+        import config
+        import db as dbm
+        device = args.device or config.CONFIG["device_id"]
+        conn = dbm.connect(args.db or None)
+        df = dbm.load_frames_df(conn, device_id=device, limit=args.limit)
+        if len(df) == 0:
+            sys.exit(f"库里没有设备 {device} 的特征;先跑 features.py --db")
+        print(f"数据源: 数据库 {dbm.resolve_db_path(args.db or None)} | 设备 {device} | 最近 {len(df)} 帧")
+    else:
+        try:
+            df = pd.read_csv(args.csv)
+        except FileNotFoundError:
+            sys.exit(f"找不到 {args.csv};先用 features.py 生成特征")
+        if len(df) == 0:
+            sys.exit("特征表为空")
 
     result = analyze(df, args.window, args.persist,
                      thresholds=(args.t1, args.t2, args.t3))
@@ -182,6 +200,11 @@ def main():
         print(f"最近一次报警: {last['time']} | {last['level_name']} | score={last['score']}")
     else:
         print("当前无报警")
+
+    if conn is not None:
+        n = dbm.upsert_alarms(conn, dbm.alarm_records(result, device))
+        conn.close()
+        print(f"报警结果已入库 {n} 帧")
 
     if args.json:
         last = result.iloc[-1]

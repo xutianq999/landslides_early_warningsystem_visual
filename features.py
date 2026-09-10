@@ -60,6 +60,8 @@ def parse_args():
     p.add_argument("--roi-target", choices=["gully", "debris", "both"], default="gully",
                    help="配合 --roi-auto:用沟壑 / 底部堆积体 / 两者合并作为 ROI")
     p.add_argument("--no-seg", action="store_true", help="跳过分割(也跳过动态掩码剔除)")
+    p.add_argument("--db", nargs="?", const="", default=None, metavar="PATH",
+                   help="同时写入 SQLite(可选路径;只写 --db 则用 config.json 里的默认路径)")
     return p.parse_args()
 
 
@@ -455,6 +457,17 @@ def main():
         for r in rows:
             w.writerow({k: r.get(k, "") for k in cols})
     print(f"已写入 {len(rows)} 行 × {len(cols)} 列 → {args.out}")
+
+    if args.db is not None:
+        import db as dbm
+        conn = dbm.connect(args.db or None)
+        # 入库时带上图片绝对路径(CSV 里只记文件名,保持原样)
+        db_rows = [{**r, "image_path": str(p.resolve())} for r, p in zip(rows, images)]
+        n, unknown = dbm.upsert_frames(conn, db_rows)
+        conn.close()
+        print(f"已入库 {n} 帧 → {dbm.resolve_db_path(args.db or None)}")
+        if unknown:
+            print(f"  未知字段存入 extra: {', '.join(sorted(unknown))}")
 
 
 if __name__ == "__main__":

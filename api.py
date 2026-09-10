@@ -1,0 +1,187 @@
+"""本地只读 REST API:平台通过 HTTP 拉取特征与报警。
+
+启动:
+    .venv/bin/python api.py
+    # 或: uvicorn api:app --host 127.0.0.1 --port 8000
+
+监听地址/端口/数据库路径见 config.py(config.json 或环境变量)。
+交互式文档:启动后打开 http://<host>:<port>/docs
+
+当前**不鉴权**。config.json 里的 `api_key` 一旦填上,所有 /api/v1 接口
+就会要求请求头 `X-API-Key`,无需改代码。
+"""
+
+import argparse
+import csv
+import io
+from contextlib import contextmanager
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+
+import config
+import db as dbm
+
+app = FastAPI(
+    title="滑坡监测数据 API",
+    version="1.0",
+    description=(
+        "边缘端(YOLOE 分割 + DA V2 深度)提取的滑坡监测特征与分级报警,供平台拉取。\n\n"
+        "**注意**:坡度为 DA V2 相对深度重建结果,存在仿射系统偏差,越远越明显;"
+        "位移为像素单位。请把数值当作**时间序列的相对变化**使用,不要当米制真值。"
+        "字段含义见项目 FEATURES.md;ROI 掩模特征仅在采集端开启 `--roi-auto` 时才有值。"
+    ),
+)
+
+
+def require_key(x_api_key: str | None = Header(default=None)):
+    """config.api_key 非空时启用简单 API Key 校验(当前默认为空=不鉴权)"""
+    key = config.CONFIG.get("api_key") or ""
+    if key and x_api_key != key:
+        raise HTTPException(status_code=401, detail="无效或缺失的 X-API-Key")
+
+
+@contextmanager
+def _conn():
+    conn = dbm.connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/docs")
+
+
+@app.get("/api/v1/health", tags=["系统"], summary="健康检查",
+         dependencies=[Depends(require_key)])
+def health():
+    """探活用:返回 schema 版本、库路径与帧数。"""
+    with _conn() as conn:
+        s = dbm.stats(conn)
+    return {"status": "ok", "schema_version": s["schema_version"],
+            "frames": s["frames"], "alarms": s["alarms"], "db_path": s["db_path"]}
+
+
+@app.get("/api/v1/devices", tags=["设备"], summary="设备列表与当前状态",
+         dependencies=[Depends(require_key)])
+def devices():
+    """每台设备的帧数、首末上报时间、最近一次报警等级。"""
+    with _conn() as conn:
+        return dbm.list_devices(conn)
+
+
+@app.get("/api/v1/frames", tags=["特征"], summary="按条件查询特征帧",
+         dependencies=[Depends(require_key)])
+def frames(device_id: str | None = None, since: str | None = None, until: str | None = None,
+           limit: int = Query(100, ge=1, le=5000), offset: int = Query(0, ge=0),
+           order: str = Query("desc", pattern="^(asc|desc)$")):
+    with _conn() as conn:
+        items = dbm.query_frames(conn, device_id, since, until, limit, offset, order)
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/v1/frames/latest", tags=["特征"], summary="最近 N 帧(看板用)",
+         dependencies=[Depends(require_key)])
+def frames_latest(device_id: str | None = None, n: int = Query(1, ge=1, le=1000)):
+    with _conn() as conn:
+        items = dbm.latest_frames(conn, n, device_id)
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/v1/frames/{frame_id}", tags=["特征"], summary="单帧全字段",
+         dependencies=[Depends(require_key)])
+def frame(frame_id: int):
+    with _conn() as conn:
+        row = dbm.get_frame(conn, frame_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="帧不存在")
+    return row
+
+
+@app.get("/api/v1/frames/{frame_id}/image", tags=["特征"], summary="该帧对应的抓图",
+         dependencies=[Depends(require_key)])
+def frame_image(frame_id: int):
+    with _conn() as conn:
+        row = dbm.get_frame(conn, frame_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="帧不存在")
+    if not row.get("image_path"):
+        raise HTTPException(status_code=404, detail="该帧没有关联图片(如网页端未落盘)")
+    p = Path(row["image_path"])
+    if not p.is_absolute():
+        p = config.ROOT / p
+    p = p.resolve()
+    root = config.ROOT.resolve()
+    if p != root and root not in p.parents:      # 防路径穿越:只允许项目目录内的文件
+        raise HTTPException(status_code=403, detail="图片路径越界")
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"图片文件不存在: {p}")
+    return FileResponse(str(p))
+
+
+@app.get("/api/v1/series", tags=["特征"], summary="指定字段的时间序列",
+         dependencies=[Depends(require_key)])
+def series(fields: str = Query(..., description="逗号分隔的字段名,如 diff_frac,slope_mean"),
+           device_id: str | None = None, since: str | None = None, until: str | None = None,
+           limit: int | None = Query(None, ge=1, le=100000)):
+    names = [f.strip() for f in fields.split(",") if f.strip()]
+    try:
+        with _conn() as conn:
+            return dbm.series(conn, names, device_id, since, until, limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/alarms", tags=["报警"], summary="查询报警判定",
+         dependencies=[Depends(require_key)])
+def alarms(device_id: str | None = None, since: str | None = None, until: str | None = None,
+           min_level: int = Query(0, ge=0, le=3), limit: int = Query(100, ge=1, le=5000),
+           offset: int = Query(0, ge=0), order: str = Query("desc", pattern="^(asc|desc)$")):
+    with _conn() as conn:
+        items = dbm.query_alarms(conn, device_id, since, until, min_level, limit, offset, order)
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/v1/alarms/latest", tags=["报警"], summary="每台设备当前报警等级",
+         dependencies=[Depends(require_key)])
+def alarms_latest(device_id: str | None = None):
+    with _conn() as conn:
+        return dbm.latest_alarms(conn, device_id)
+
+
+@app.get("/api/v1/export.csv", tags=["导出"], summary="特征帧 CSV 导出",
+         response_class=PlainTextResponse, dependencies=[Depends(require_key)])
+def export_csv(device_id: str | None = None, since: str | None = None, until: str | None = None,
+               limit: int = Query(10000, ge=1, le=1000000)):
+    with _conn() as conn:
+        rows = dbm.query_frames(conn, device_id, since, until, limit, offset=0, order="asc")
+    buf = io.StringIO()
+    if rows:
+        w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    return PlainTextResponse(buf.getvalue(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": 'attachment; filename="frames.csv"'})
+
+
+def main():
+    import uvicorn
+    ap = argparse.ArgumentParser(description="滑坡监测数据 API")
+    ap.add_argument("--host", default=config.CONFIG["api_host"])
+    ap.add_argument("--port", type=int, default=config.CONFIG["api_port"])
+    ap.add_argument("--reload", action="store_true", help="开发用:改动自动重载")
+    args = ap.parse_args()
+    print(f"API 文档: http://{args.host}:{args.port}/docs")
+    print(f"数据库  : {dbm.resolve_db_path()}")
+    if args.host == "0.0.0.0" and not config.CONFIG.get("api_key"):
+        print("提示: 监听 0.0.0.0 且未设 api_key,局域网内任何人都能读取;"
+              "如需暴露请先在 config.json 填 api_key")
+    uvicorn.run("api:app", host=args.host, port=args.port, reload=args.reload)
+
+
+if __name__ == "__main__":
+    main()

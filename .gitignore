@@ -19,6 +19,9 @@ __pycache__/
 .pytest_cache/
 
 # ---- 生成的产物(可随时重跑生成)----
+data/            # SQLite 数据库
+images/          # 网页端抓图落盘目录
+config.json      # 现场配置(从 config.example.json 复制)
 pointclouds/
 *_pointcloud.ply
 *_mesh.ply
@@ -42,3 +45,4 @@ _deprecated/
 .vscode/
 .idea/
 *.swp
+.zcode/

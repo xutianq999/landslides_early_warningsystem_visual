@@ -129,6 +129,22 @@ def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
     def fmt(v):
         return f"{v:.4f}" if isinstance(v, float) and v == v else ("nan" if v != v else str(v))
     table = [[k, fmt(v)] for k, v in row.items()]
+
+    # 原图落盘 + 特征入库,平台通过 api.py 拉取(DB 不可用时不影响网页出结果)
+    try:
+        import config
+        import db as dbm
+        img_dir = config.images_dir()
+        img_dir.mkdir(parents=True, exist_ok=True)
+        stamp = row["time"].replace(":", "").replace("-", "")
+        ipath = img_dir / f"{config.CONFIG['device_id']}_{stamp}.jpg"
+        pil.convert("RGB").save(ipath, quality=90)
+        conn = dbm.connect()
+        dbm.upsert_frames(conn, [{**row, "image_path": str(ipath.resolve())}])
+        conn.close()
+    except Exception as e:
+        print(f"[warn] 入库失败(CSV 已写入): {e}")
+
     return table, out, cur, overlay
 
 

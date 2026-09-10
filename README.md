@@ -154,6 +154,22 @@ DA V2 Base 实测无实质收益(Small 相关性 0.996、成图肉眼无差,却�
 > `core.py` 加载 DA V2 时用 `local_files_only=True`,**运行时不联网**:优先读项目内
 > `models/`,再回退 HuggingFace 本地缓存;两者都没有会立即报错并提示,不会卡在重试上。
 
+## 数据 API 与数据库(api.py / db.py)
+
+特征与报警落 SQLite,由本机 FastAPI 服务暴露 HTTP 接口供平台拉取。**接口与字段说明见 [API.md](API.md)**。
+
+```bash
+cp config.example.json config.json     # 改 device_id / 监听地址等
+.venv/bin/python db.py --init          # 建表
+.venv/bin/python features.py 3.jpg --db        # 提取特征并入库
+.venv/bin/python alarm.py --db                 # 取尾部窗口重算报警并写回
+.venv/bin/python api.py                        # http://127.0.0.1:8000/docs
+```
+
+- 写入**幂等**:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复;`NaN` 存 `NULL`。
+- 图片留磁盘(`images/`),库里只存路径;`GET /api/v1/frames/{id}/image` 按路径回传。
+- 默认只监听 `127.0.0.1` 且不鉴权;要远程拉取先改 `api_host` 并设 `api_key`。
+
 ## 模型权重与离线部署
 
 权重**随项目文件夹一起走**。新机器上只需拷贝整个目录 + `pip install -r requirements.txt`
@@ -201,6 +217,11 @@ visualize3d.py         点云 + 主平面可视化(含 ROI 与侧视图)
 validate_features.py   特征有效性验证(合成真值 / 扰动 / 位移 / 动态剔除)
 alarm.py               实时报警:变化率/加速度/噪声门控 → 分级
 export_features_excel.py  特征导出 Excel(字段清单 + 原始数据)
+config.py              配置:默认值 < config.json < 环境变量
+db.py                  SQLite 存储层:建表 / 幂等写入 / 查询
+api.py                 本地只读 REST API(FastAPI),供平台拉取
+API.md                 接口文档(端点 / 字段映射 / 数据语义说明)
+config.example.json    配置模板(复制为 config.json,后者不入库)
 PIPELINE.md            四层数据源与报警流程说明
 FEATURES.md            每个特征字段的详细说明
 demo_image.py          图片零样本分割
