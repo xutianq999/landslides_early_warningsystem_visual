@@ -25,7 +25,7 @@ from pathlib import Path
 
 import config
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 META_KEY = "schema_version"
 
 # features.py 输出的特征列(原始名,顺序即建表顺序)
@@ -56,7 +56,7 @@ FEATURE_KEYS = [
 INT_KEYS = {"seg_person_n", "seg_car_n", "seg_truck_n", "seg_construction vehicle_n"}
 
 _ALARM_COLS = ["valid", "score", "top_signal", "top_severity",
-               "level", "level_name", "camera_alarm"]
+               "level", "level_name", "camera_alarm", "source"]
 _ALARM_UPDATE = ", ".join(f'"{c}"=excluded."{c}"' for c in _ALARM_COLS)
 
 
@@ -124,11 +124,41 @@ CREATE TABLE IF NOT EXISTS alarms (
   level_name TEXT,
   camera_alarm INTEGER,
   detail TEXT,
+  source TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (device_id, captured_at)
 );
 CREATE INDEX IF NOT EXISTS idx_alarms_level ON alarms(level);
 CREATE INDEX IF NOT EXISTS idx_alarms_captured ON alarms(captured_at);
+
+-- 实时通道的指标:与分析通道(frames)分表,因为两套语义不同、列数差很多,
+-- 混在一张表里会大面积 NULL。平台看"突发"查这张,看"趋势"查 frames。
+CREATE TABLE IF NOT EXISTS realtime_metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  base_at TEXT,
+  base_age_s REAL,
+  change_frac REAL,
+  change_mean REAL,
+  valid_frac REAL,
+  occluded_frac REAL,
+  filled_frac REAL,
+  accel REAL,
+  shift_px REAL,
+  shift_resp REAL,
+  brightness REAL,
+  ok INTEGER,
+  level INTEGER,
+  level_name TEXT,
+  camera_alarm INTEGER,
+  reasons TEXT,
+  params TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(device_id, captured_at)
+);
+CREATE INDEX IF NOT EXISTS idx_rt_captured ON realtime_metrics(captured_at);
+CREATE INDEX IF NOT EXISTS idx_rt_device_captured ON realtime_metrics(device_id, captured_at);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
@@ -149,9 +179,12 @@ CREATE TABLE IF NOT EXISTS devices (
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
     """轻量迁移:给已存在的库补上后加的列(幂等;CREATE IF NOT EXISTS 不会加列)"""
-    have = {r[1] for r in conn.execute("PRAGMA table_info(frames)")}
-    if "params" not in have:
+    frames_cols = {r[1] for r in conn.execute("PRAGMA table_info(frames)")}
+    if "params" not in frames_cols:
         conn.execute("ALTER TABLE frames ADD COLUMN params TEXT")
+    alarm_cols = {r[1] for r in conn.execute("PRAGMA table_info(alarms)")}
+    if "source" not in alarm_cols:
+        conn.execute("ALTER TABLE alarms ADD COLUMN source TEXT")
 
 
 # ---------------------------------------------------------------- 值清洗
@@ -281,7 +314,11 @@ def alarm_records(df, device_id: str) -> list[dict]:
 
 def upsert_alarms(conn: sqlite3.Connection, records: list[dict],
                   with_frame_id: bool = True) -> int:
-    """写入报警判定(按 device_id+captured_at 幂等覆盖)"""
+    """写入报警判定(按 device_id+captured_at 幂等覆盖)。
+
+    `source` 区分来源:`analysis`(分析通道,趋势)或 `realtime`(实时通道,突发)。
+    两套的等级语义不同,平台查询时应带上 source。
+    """
     init_db(conn)
     now = _iso_now()
     ids = {}
@@ -294,19 +331,69 @@ def upsert_alarms(conn: sqlite3.Connection, records: list[dict],
             r.get("frame_id") or ids.get(dev, {}).get(str(r["captured_at"])),
             _int(r.get("valid")), _num(r.get("score")), r.get("top_signal"),
             _num(r.get("top_severity")), _int(r.get("level")), r.get("level_name"),
-            _int(r.get("camera_alarm")),
+            _int(r.get("camera_alarm")), r.get("source") or "analysis",
             json.dumps(r.get("detail"), ensure_ascii=False) if r.get("detail") else None,
             now,
         ]
         conn.execute(
             "INSERT INTO alarms (device_id, captured_at, frame_id, valid, score, top_signal,"
-            " top_severity, level, level_name, camera_alarm, detail, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+            " top_severity, level, level_name, camera_alarm, source, detail, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
             f" ON CONFLICT(device_id, captured_at) DO UPDATE SET"
             f" frame_id=excluded.frame_id, {_ALARM_UPDATE}, detail=excluded.detail,"
             " updated_at=excluded.updated_at", payload)
     conn.commit()
     return len(records)
+
+
+_REALTIME_COLS = ["base_at", "base_age_s", "change_frac", "change_mean", "valid_frac",
+                  "occluded_frac", "filled_frac", "accel", "shift_px", "shift_resp",
+                  "brightness", "ok", "level", "level_name", "camera_alarm", "reasons", "params"]
+
+
+def upsert_realtime(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """写入实时通道指标(按 device_id+captured_at 幂等覆盖)"""
+    init_db(conn)
+    now = _iso_now()
+    cols = ["device_id", "captured_at", *_REALTIME_COLS, "created_at"]
+    quoted = ",".join(f'"{c}"' for c in cols)
+    update = ", ".join(f'"{c}"=excluded."{c}"' for c in [*_REALTIME_COLS, "created_at"])
+    sql = (f"INSERT INTO realtime_metrics ({quoted}) VALUES ({','.join('?' * len(cols))}) "
+           f"ON CONFLICT(device_id, captured_at) DO UPDATE SET {update}")
+    payload = []
+    for r in rows:
+        captured = r.get("captured_at") or r.get("time")
+        if not captured:
+            raise ValueError("实时指标缺少 captured_at")
+        payload.append([
+            r.get("device_id") or config.CONFIG["device_id"], str(captured),
+            r.get("base_at"), _num(r.get("base_age_s")),
+            _num(r.get("change_frac")), _num(r.get("change_mean")), _num(r.get("valid_frac")),
+            _num(r.get("occluded_frac")), _num(r.get("filled_frac")), _num(r.get("accel")),
+            _num(r.get("shift_px")), _num(r.get("shift_resp")), _num(r.get("brightness")),
+            _int(r.get("ok")), _int(r.get("level")), r.get("level_name"),
+            _int(r.get("camera_alarm")),
+            json.dumps(r.get("reasons"), ensure_ascii=False) if r.get("reasons") else None,
+            json.dumps(r.get("params"), ensure_ascii=False) if r.get("params") else None,
+            now,
+        ])
+    conn.executemany(sql, payload)
+    conn.commit()
+    return len(payload)
+
+
+def query_realtime(conn, device_id=None, since=None, until=None, min_level=0,
+                   limit=100, offset=0, order="desc") -> list[dict]:
+    init_db(conn)
+    where, params = ["level >= ?"], [int(min_level)]
+    if device_id:
+        where.append("device_id = ?")
+        params.append(device_id)
+    _time_filter(where, params, since, until)
+    sql = ("SELECT * FROM realtime_metrics WHERE " + " AND ".join(where)
+           + f" ORDER BY captured_at {'DESC' if order == 'desc' else 'ASC'} LIMIT ? OFFSET ?")
+    params += [int(limit), int(offset)]
+    return _dicts(conn.execute(sql, params))
 
 
 # ---------------------------------------------------------------- 查询

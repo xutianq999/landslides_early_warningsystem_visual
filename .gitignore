@@ -25,6 +25,8 @@ images/
 # 现场配置(含相机口令)与运行日志 —— 绝不入库
 config.json
 capture.log
+# 报警证据图(滚动清理)
+alarms/
 pointclouds/
 *_pointcloud.ply
 *_mesh.ply
