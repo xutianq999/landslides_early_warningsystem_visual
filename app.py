@@ -18,6 +18,43 @@ import gradio as gr
 from PIL import Image
 
 from core import DEVICE, backproject, export_mesh, export_pointcloud, get_model
+import config
+
+# ROI 目标:界面中文标签 ↔ 配置里的内部名 ↔ segment_gully 返回的掩模键
+ROI_LABELS = {"gully": "沟壑", "debris": "堆积体", "both": "两者"}
+ROI_KEYS = {v: k for k, v in ROI_LABELS.items()}
+ROI_MASK_KEYS = {"gully": "mask", "debris": "debris", "both": "mask_all"}
+
+DEVICE_INFO_HINT = ("选择设备号后,自动套用该点位的类别/FOV/ROI 等参数;"
+                    "不选则用界面当前值。")
+
+
+def device_choices() -> list[str]:
+    """下拉框选项:配置里登记过的设备号 ∪ 当前生效设备号"""
+    ids = set((config.CONFIG.get("devices") or {}).keys())
+    ids.add(config.CONFIG["device_id"])
+    return sorted(ids)
+
+
+def apply_device(device):
+    """选中设备号 → 把该点位参数套到各控件,并显示设备信息(与 API/CLI 同一套解析)"""
+    import features as F
+    p = F.resolve_params(device)
+    meta = config.device_meta(device)
+    title = device
+    if meta.get("name"):
+        title += f" · {meta['name']}"
+    if meta.get("location"):
+        title += f" · {meta['location']}"
+    if p["roi_auto"]:
+        roi = f"自动检测({ROI_LABELS[p['roi_target']]})"
+    else:
+        roi = str(p["roi"]) if p["roi"] else "全图"
+    info = (f"**{title}**\n\n"
+            f"类别: {p['classes']}\n\n"
+            f"FOV {p['fov']}° · 最远 {p['max_depth']} m · 置信度 {p['conf']} · ROI: {roi}")
+    return (p["classes"], p["classes"], p["conf"], p["max_depth"], p["fov"],
+            p["roi_auto"], ROI_LABELS[p["roi_target"]], info)
 
 
 def turbo_colormap(gray01: np.ndarray) -> np.ndarray:
@@ -43,7 +80,7 @@ def infer_seg(image, classes_text, conf):
     return r.plot(), info
 
 
-def infer_da2(image, export_pc=False, max_depth=10.0, export_fmt="点云"):
+def infer_da2(image, export_pc=False, max_depth=10.0, export_fmt="点云", fov=60.0):
     """Depth Anything V2 Small 相对深度,可选导出 .ply 点云/网格"""
     if image is None:
         raise gr.Error("请先在左侧上传图片")
@@ -60,7 +97,7 @@ def infer_da2(image, export_pc=False, max_depth=10.0, export_fmt="点云"):
     if export_pc:
         try:
             fn = export_mesh if export_fmt.startswith("网格") else export_pointcloud
-            ply_path = fn(pil, d01, max_depth=max_depth)
+            ply_path = fn(pil, d01, max_depth=max_depth, fov_deg=fov)
             info += f"\n{export_fmt}已导出:{ply_path}"
         except Exception as e:
             info += f"\n点云导出失败: {e}"
@@ -73,9 +110,10 @@ MODES = {
 }
 
 
-def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
+def ui_extract_features(image, device, classes_text, conf, max_depth, fov, prev, roi_auto, roi_target):
     """网页端特征提取:一张图 → 特征表 + 累积 CSV,并用 gr.State 记住上一帧做变化检测
 
+    classes/conf/max_depth/fov 由界面控件传入(选设备号可一键套用该点位参数)。
     roi_auto=True 时先用 segment_gully 自动检测,按 roi_target 选择 ROI:
     沟壑 / 底部堆积体 / 两者合并。沟壑与堆积体是两个独立掩模(互不重叠)。
     """
@@ -85,8 +123,10 @@ def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
     from datetime import datetime
     import features as F
 
+    device = device or config.CONFIG["device_id"]
     pil = Image.fromarray(image) if isinstance(image, np.ndarray) else image
     classes = [c.strip() for c in classes_text.split(",") if c.strip()] or None
+    roi_key = ROI_KEYS.get(roi_target, "gully")
 
     roi_mask, overlay, extra_masks = None, None, None
     if roi_auto:
@@ -94,7 +134,7 @@ def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
         import segment_gully
         bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
         res = segment_gully.detect_gully(bgr)
-        key = {"沟壑": "mask", "堆积体": "debris", "两者": "mask_all"}[roi_target]
+        key = ROI_MASK_KEYS[roi_key]
         roi_mask = res[key] > 0
         extra_masks = {"gully": res["mask"], "debris": res["debris"]}
         # 叠加预览:沟壑绿、堆积体橙,选中的区域加亮
@@ -114,7 +154,8 @@ def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
                 cv2.circle(bgr, (int(res["right"][y]), y), 2, (255, 0, 0), -1)
         overlay = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
-    row, cur = F.features_from_image(pil, classes=classes, conf=0.15, prev=prev,
+    row, cur = F.features_from_image(pil, classes=classes, conf=conf, prev=prev,
+                                     max_depth=max_depth, fov=fov,
                                      roi_mask=roi_mask, extra_masks=extra_masks)
     row = {"time": datetime.now().isoformat(timespec="seconds"), **row}
 
@@ -130,17 +171,21 @@ def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
         return f"{v:.4f}" if isinstance(v, float) and v == v else ("nan" if v != v else str(v))
     table = [[k, fmt(v)] for k, v in row.items()]
 
-    # 原图落盘 + 特征入库,平台通过 api.py 拉取(DB 不可用时不影响网页出结果)
+    # 原图落盘 + 特征入库(按界面选中的设备号),平台通过 api.py 拉取
     try:
-        import config
         import db as dbm
-        img_dir = config.images_dir()
+        img_dir = config.images_dir() / device
         img_dir.mkdir(parents=True, exist_ok=True)
         stamp = row["time"].replace(":", "").replace("-", "")
-        ipath = img_dir / f"{config.CONFIG['device_id']}_{stamp}.jpg"
+        ipath = img_dir / f"{stamp}.jpg"
         pil.convert("RGB").save(ipath, quality=90)
+        params = {**F.resolve_params(device), "conf": conf, "max_depth": max_depth,
+                  "fov": fov, "classes": classes_text,
+                  "roi_auto": bool(roi_auto),
+                  "roi_target": roi_key if roi_auto else None}
         conn = dbm.connect()
-        dbm.upsert_frames(conn, [{**row, "image_path": str(ipath.resolve())}])
+        dbm.upsert_frames(conn, [{**row, "image_path": str(ipath.resolve()), "params": params}],
+                          device_id=device)
         conn.close()
     except Exception as e:
         print(f"[warn] 入库失败(CSV 已写入): {e}")
@@ -148,12 +193,12 @@ def ui_extract_features(image, classes_text, prev, roi_auto, roi_target):
     return table, out, cur, overlay
 
 
-def run(mode, image, classes_text, conf, export_pc, max_depth, export_fmt):
+def run(mode, image, classes_text, conf, export_pc, max_depth, export_fmt, fov):
     try:
         if mode.startswith("YOLOE 零"):
             img, info = MODES[mode](image, classes_text, conf)
             return img, info, None, None
-        img, info, ply = MODES[mode](image, export_pc, max_depth, export_fmt)
+        img, info, ply = MODES[mode](image, export_pc, max_depth, export_fmt, fov)
         return img, info, ply, ply
     except gr.Error:
         raise
@@ -168,6 +213,10 @@ with gr.Blocks(title="视觉小工具:零样本分割 + 单目深度") as demo:
     with gr.Row():
         with gr.Column(scale=1, min_width=380):
             gr.Markdown("### 输入")
+            device_dd = gr.Dropdown(choices=device_choices(), value=config.CONFIG["device_id"],
+                                    allow_custom_value=True,
+                                    label="设备号(选择后自动套用该点位参数)")
+            dev_info = gr.Markdown(DEVICE_INFO_HINT)
             input_img = gr.Image(label="原图", type="numpy", height=380)
             mode = gr.Radio(list(MODES.keys()), value="YOLOE 零样本分割", label="模型")
             classes_text = gr.Textbox(
@@ -178,6 +227,8 @@ with gr.Blocks(title="视觉小工具:零样本分割 + 单目深度") as demo:
             export_pc = gr.Checkbox(value=False, label="导出点云/网格 .ply(DA V2 模式)")
             max_depth = gr.Slider(2, 50, value=10, step=1,
                                   label="场景最远距离/米(近似尺度)")
+            fov = gr.Slider(20, 120, value=60, step=1,
+                            label="相机水平 FOV(度,影响点云与几何尺度)")
             export_fmt = gr.Radio(["点云", "网格"], value="点云",
                                   label="导出格式(网格=三角面,表面连续无稀疏感)")
             btn = gr.Button("开始推理", variant="primary")
@@ -208,14 +259,19 @@ with gr.Blocks(title="视觉小工具:零样本分割 + 单目深度") as demo:
                                       height=300, interactive=False)
     prev_state = gr.State(None)
 
+    # 选设备号 → 一键套用该点位参数(类别/FOV/最远距离/置信度/ROI)
+    device_dd.change(apply_device, inputs=device_dd,
+                     outputs=[classes_text, feat_classes, conf, max_depth, fov,
+                              feat_roi_auto, feat_roi_target, dev_info])
     # 选非分割模型时隐藏分割专属控件
     mode.change(lambda m: (gr.update(visible=m.startswith("YOLOE 分割") or m.startswith("YOLOE 零")),
                            gr.update(visible=m.startswith("YOLOE"))),
                 inputs=mode, outputs=[classes_text, conf])
-    btn.click(run, inputs=[mode, input_img, classes_text, conf, export_pc, max_depth, export_fmt],
+    btn.click(run, inputs=[mode, input_img, classes_text, conf, export_pc, max_depth, export_fmt, fov],
               outputs=[output_img, output_info, output_file, output_3d])
     btn_feat.click(ui_extract_features,
-                   inputs=[input_img, feat_classes, prev_state, feat_roi_auto, feat_roi_target],
+                   inputs=[input_img, device_dd, feat_classes, conf, max_depth, fov,
+                           prev_state, feat_roi_auto, feat_roi_target],
                    outputs=[feat_df, feat_file, prev_state, feat_gully_img])
 
 if __name__ == "__main__":

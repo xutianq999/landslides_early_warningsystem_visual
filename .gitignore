@@ -22,6 +22,7 @@ __pycache__/
 data/            # SQLite 数据库
 images/          # 网页端抓图落盘目录
 config.json      # 现场配置(从 config.example.json 复制)
+capture.log      # 抓图服务日志
 pointclouds/
 *_pointcloud.ply
 *_mesh.ply

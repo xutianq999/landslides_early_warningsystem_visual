@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  常驻抓图服务的 launchd 模板(macOS)。
+
+  用法:
+    1. 把下面的 YOURNAME 全部替换成实际用户名(路径必须是绝对路径)
+    2. cp deploy/capture.plist.example ~/Library/LaunchAgents/com.example.yoloe.capture.plist
+    3. launchctl load ~/Library/LaunchAgents/com.example.yoloe.capture.plist
+       (卸载: launchctl unload ~/Library/LaunchAgents/com.example.yoloe.capture.plist)
+
+  注意 WorkingDirectory 必须是项目根目录:YOLOE 的 mobileclip2_b.ts 由 ultralytics
+  按当前工作目录解析,换目录会触发联网下载。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.yoloe.capture</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOURNAME/Desktop/yoloe-demo/.venv/bin/python</string>
+    <string>/Users/YOURNAME/Desktop/yoloe-demo/capture.py</string>
+    <string>--log</string>
+    <string>/Users/YOURNAME/Desktop/yoloe-demo/capture.log</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOURNAME/Desktop/yoloe-demo</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/yoloe-capture.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/yoloe-capture.err.log</string>
+</dict>
+</plist>

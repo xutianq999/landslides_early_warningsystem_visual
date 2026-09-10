@@ -26,8 +26,8 @@ DEVICE_PARAM_KEYS = (
     "classes", "conf", "max_depth", "fov", "roi", "roi_auto", "roi_target",
     # 报警(现场必须按点位标定,见 PIPELINE.md)
     "window", "persist", "t1", "t2", "t3",
-    # 抓图(供后续 RTSP 采集模块)
-    "rtsp_url", "interval_min",
+    # 抓图(供 capture.py)
+    "rtsp_url", "interval_min", "rtsp_transport", "enabled", "lat", "lon",
     # 展示用元信息
     "name", "location",
 )

@@ -166,13 +166,40 @@ cp config.example.json config.json     # 改 device_id / devices 元信息 / 监
 .venv/bin/python api.py                        # http://127.0.0.1:8000/docs
 ```
 
-- **设备号与每设备参数**:每帧归属一个 `device_id`(后续一路海康 RTSP 流 = 一个点位)。
+- **设备号与每设备参数**:每帧归属一个 `device_id`(一路海康 RTSP 流 = 一个点位)。
   CLI 用 `--device` 指定,否则取 `config.json`;不同点位可有不同的类别 / FOV / ROI / 报警阈值,
   优先级为 `命令行 > devices[设备号] > defaults > 内置默认`,每帧的计算参数会存进 `frames.params`。
 - 写入**幂等**:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复;`NaN` 存 `NULL`。
-- 图片留磁盘(`images/`),库里只存路径;`GET /api/v1/frames/{id}/image` 按路径回传。
+- 图片留磁盘(`images/<设备号>/`),库里只存路径;`GET /api/v1/frames/{id}/image` 按路径回传。
 - 默认只监听 `127.0.0.1`(仅本机);改成 `0.0.0.0` 对局域网开放前,请确认网络边界安全
   ——本服务**不鉴权**,任何能连上端口的人都能读取全部数据。
+
+## 定时抓图(capture.py)
+
+从海康 RTSP 流按点位定时抓帧 → 提取特征 → 入库 → 刷新报警,整条链路自动跑起来。
+
+```bash
+# 常驻:按每设备 interval_min 抓(生产用 launchd 拉起,见 deploy/capture.plist.example)
+.venv/bin/python capture.py
+.venv/bin/python capture.py --log capture.log
+
+# 抓一轮就退出(适合 launchd/cron)
+.venv/bin/python capture.py --once
+.venv/bin/python capture.py --once --device HIK-01
+
+# 不连相机也能跑通全链路(测试/补录)
+.venv/bin/python capture.py --from-file 3.jpg --device HIK-01
+```
+
+在 `config.json` 的 `devices.<设备号>` 里配 `rtsp_url`、`interval_min`、`rtsp_transport`、
+`enabled`(可选 `lat`/`lon` 自动带降雨特征)。海康地址形如
+`rtsp://admin:密码@ip:554/Streaming/Channels/102`(末尾 `102` 是子码流,分辨率低、省带宽更稳)。
+
+- **每次采样独立建连**:RTSP 长连接会积陈旧缓冲、抓到几秒前的画面;新建连接天然拿最新帧。
+- **上一帧状态存 `data/state/<设备号>.npz`**:`diff_*`/`shift_*` 需要上一帧做对比,低频抓图进程是
+  短命的,所以状态落盘,保证时序特征跨进程连续(首次采样时序字段为空)。
+- 抓帧失败会退避重试(2/4/8 秒)后跳过本次,**不中断循环**;某次失败会让下一次的帧间间隔被拉长。
+- 多设备串行处理:一块 MPS 上推理排队,采样间隔建议 ≥2 分钟。
 
 ## 模型权重与离线部署
 
@@ -213,7 +240,7 @@ cp -L ~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-Small-h
 
 ```
 core.py                共享内核:设备/模型懒加载/反投影/PLY 导出(app、features、demo 共用)
-app.py                 网页推理台(Gradio)
+app.py                 网页推理台(Gradio),选设备号可自动套用该点位参数
 features.py            滑坡监测特征提取(30 项,ROI 模式 44 项)→ CSV,支持 --roi/--roi-auto
 segment_gully.py       沟壑分割:颜色阈值 + OpenCV 逐行边界追踪
 segment_color.py       Lab 颜色 K-means 分割主坡体(实验性)
@@ -224,6 +251,8 @@ export_features_excel.py  特征导出 Excel(字段清单 + 原始数据)
 config.py              配置:默认值 < config.json < 环境变量
 db.py                  SQLite 存储层:建表 / 幂等写入 / 查询
 api.py                 本地只读 REST API(FastAPI),供平台拉取
+capture.py             海康 RTSP 定时抓图 → 特征 → 入库 → 刷新报警
+deploy/capture.plist.example  launchd 常驻模板(macOS 开机自启/崩溃拉起)
 API.md                 接口文档(端点 / 字段映射 / 数据语义说明)
 config.example.json    配置模板(复制为 config.json,后者不入库)
 PIPELINE.md            四层数据源与报警流程说明

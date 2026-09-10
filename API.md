@@ -33,9 +33,10 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 
 | 入口 | 命令 |
 |---|---|
+| **RTSP 定时抓图(推荐)** | `.venv/bin/python capture.py`(常驻)或 `capture.py --once` |
 | 命令行批量 | `.venv/bin/python features.py ./snapshots --db --device HIK-01` |
 | 命令行指定库 | `.venv/bin/python features.py 3.jpg --db /path/monitor.db` |
-| 网页台 | 点「提取滑坡特征」自动落盘图片 + 入库(用 config 默认设备号) |
+| 网页台 | 选设备号 → 点「提取滑坡特征」,自动落盘图片 + 按该设备号入库 |
 | 报警重算 | `.venv/bin/python alarm.py --db --device HIK-01`(取尾部 500 帧重算,`--limit` 可调) |
 
 写入是**幂等**的:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复。
@@ -94,9 +95,9 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 每帧入库时会把当次生效的参数写进 `frames.params`(JSON),所以**换了 FOV/类别/ROI 之后,
 历史数据是否可比一查就知道**;`GET /api/v1/devices` 的 `params` 字段给出各设备当前参数。
 
-**后续接入海康 RTSP 的做法**(尚未实现):一个点位配一个 `device_id` 和一条 `rtsp_url`,
-定时从 `rtsp://…/Streaming/Channels/101` 抓帧存盘(文件名带时间戳),再调
-`features.py <图片> --db --device <号>` 入库即可,无需改动存储与接口层。
+**海康 RTSP 抓图已实现**(`capture.py`):在 `config.json` 的 `devices.<设备号>` 里配
+`rtsp_url` / `interval_min` / `rtsp_transport`,运行 `capture.py` 即可定时抓帧 → 按该设备参数
+提取特征 → 入库 → 刷新报警,无需再动存储与接口层。详见 README「定时抓图」一节。
 
 ## 接口一览(前缀 `/api/v1`)
 

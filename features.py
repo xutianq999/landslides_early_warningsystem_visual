@@ -432,18 +432,35 @@ def extract_one(path: Path, args, prev: tuple | None) -> tuple[dict, tuple]:
     return out, cur
 
 
+def resolve_params(device_id: str | None = None) -> dict:
+    """按设备解析参数:devices[设备号] > defaults > 内置默认。
+
+    app.py / capture.py / CLI 共用同一套默认值,避免各写一份。
+    """
+    dc = config.for_device(device_id)
+    target = dc.get("roi_target") or "gully"
+    return {
+        "classes": dc.get("classes") or DEFAULT_CLASSES,
+        "conf": float(dc.get("conf", 0.15)),
+        "max_depth": float(dc.get("max_depth", 10.0)),
+        "fov": float(dc.get("fov", 60.0)),
+        "roi": dc.get("roi"),
+        "roi_auto": bool(dc.get("roi_auto", False)),
+        "roi_target": target if target in ("gully", "debris", "both") else "gully",
+    }
+
+
 def _resolve_args(args):
-    """参数来源优先级:命令行 > 设备配置(config: defaults 合并该设备)> 代码内置默认"""
-    dc = config.for_device(args.device)
-    args.classes = args.classes or dc.get("classes") or DEFAULT_CLASSES
-    args.conf = args.conf if args.conf is not None else float(dc.get("conf", 0.15))
-    args.max_depth = args.max_depth if args.max_depth is not None else float(dc.get("max_depth", 10.0))
-    args.fov = args.fov if args.fov is not None else float(dc.get("fov", 60.0))
-    args.roi = args.roi if args.roi is not None else dc.get("roi")
+    """参数来源优先级:命令行 > 设备配置(resolve_params)> 代码内置默认"""
+    p = resolve_params(args.device)
+    args.classes = args.classes or p["classes"]
+    args.conf = args.conf if args.conf is not None else p["conf"]
+    args.max_depth = args.max_depth if args.max_depth is not None else p["max_depth"]
+    args.fov = args.fov if args.fov is not None else p["fov"]
+    args.roi = args.roi if args.roi is not None else p["roi"]
     if args.roi_auto is None:
-        args.roi_auto = bool(dc.get("roi_auto", False))
-    target = args.roi_target or dc.get("roi_target") or "gully"
-    args.roi_target = target if target in ("gully", "debris", "both") else "gully"
+        args.roi_auto = p["roi_auto"]
+    args.roi_target = args.roi_target or p["roi_target"]
     return args
 
 
