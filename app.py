@@ -14,7 +14,6 @@ except ImportError:
     pass
 
 import numpy as np
-import time
 import gradio as gr
 from PIL import Image
 
@@ -44,17 +43,18 @@ def infer_seg(image, classes_text, conf):
     return r.plot(), info
 
 
-def _infer_da2(image, model_id, export_pc=False, max_depth=10.0, export_fmt="点云"):
-    """Depth Anything V2 通用推理(Small/Base 同接口),可选导出 .ply 点云/网格"""
-    pipe = get_model(model_id)
+def infer_da2(image, export_pc=False, max_depth=10.0, export_fmt="点云"):
+    """Depth Anything V2 Small 相对深度,可选导出 .ply 点云/网格"""
+    if image is None:
+        raise gr.Error("请先在左侧上传图片")
+    pipe = get_model("da2s")
     pil = Image.fromarray(image) if isinstance(image, np.ndarray) else image
     result = pipe(pil)
     depth = np.array(result["predicted_depth"])
     d01 = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
     d8 = (d01 * 255).astype(np.uint8)
     colored = turbo_colormap(np.array(Image.fromarray(d8).resize(pil.size, Image.BILINEAR)) / 255.0)
-    size = {"da2s": "Small 24.8M", "da2b": "Base 97M"}[model_id]
-    info = f"相对深度(逆深度,越红越近)\nDA V2 {size}, {DEVICE}"
+    info = f"相对深度(逆深度,越红越近)\nDA V2 Small 24.8M,{DEVICE}"
 
     ply_path = None
     if export_pc:
@@ -67,91 +67,9 @@ def _infer_da2(image, model_id, export_pc=False, max_depth=10.0, export_fmt="点
     return colored, info, ply_path
 
 
-def infer_da2(image, export_pc=False, max_depth=10.0, export_fmt="点云"):
-    if image is None:
-        raise gr.Error("请先在左侧上传图片")
-    return _infer_da2(image, "da2s", export_pc, max_depth, export_fmt)
-
-
-def infer_da2_base(image, export_pc=False, max_depth=10.0, export_fmt="点云"):
-    if image is None:
-        raise gr.Error("请先在左侧上传图片")
-    return _infer_da2(image, "da2b", export_pc, max_depth, export_fmt)
-
-
-def rss_mb():
-    """当前进程常驻内存 MB(MPS 统一内存,以此近似模型显存占用)"""
-    import psutil
-    return psutil.Process().memory_info().rss / 1024 / 1024
-
-
-def infer_compare(image, export_pc=False, max_depth=10.0, export_fmt="点云"):
-    """横向对比:原图 + 分割 + 两个深度模型,拼成一张宽图,标注耗时与内存"""
-    if image is None:
-        raise gr.Error("请先在左侧上传图片")
-    import cv2
-    panels = []
-    infos = []
-
-    def add(img, title, sub=""):
-        h = 360
-        img8 = img if img.dtype == np.uint8 else (img * 255).astype(np.uint8)
-        scale = h / img8.shape[0]
-        w = int(img8.shape[1] * scale)
-        panel = cv2.resize(img8, (w, h), interpolation=cv2.INTER_AREA)
-        cv2.rectangle(panel, (0, 0), (w, 56), (30, 30, 30), -1)
-        cv2.putText(panel, title, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        if sub:
-            cv2.putText(panel, sub, (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1)
-        panels.append(panel)
-
-    add(image, "Input")
-    # (显示名, 模型全称, 参数量/权重, 推理函数)
-    entries = [
-        ("YOLOE Seg", "yoloe-26s-seg.pt", "15.3M params / 31MB", infer_seg),
-        ("DA V2 S", "Depth-Anything-V2-Small", "24.8M params / 99MB", infer_da2),
-        ("DA V2 B", "Depth-Anything-V2-Base", "97M params / 390MB", infer_da2_base),
-    ]
-    for mode, full, size, fn in entries:
-        try:
-            mem0 = rss_mb()
-            t0 = time.time()
-            if fn is infer_seg:
-                out, info = fn(image, "person,car,bus", 0.25)
-                out = out[:, :, ::-1]  # ultralytics plot() 输出 BGR,转 RGB
-            else:
-                out, info, _ = fn(image)
-            ms = (time.time() - t0) * 1000
-            delta = rss_mb() - mem0
-            add(out, f"{mode} | {size}", f"{full}  {ms:.0f}ms")
-            infos.append(f"{mode} [{full}, {size}]: {info.splitlines()[0]}  [{ms:.0f}ms]")
-        except Exception as e:
-            infos.append(f"{mode}: 失败 {e}")
-
-    gap = 6
-    total_w = sum(p.shape[1] for p in panels) + gap * (len(panels) - 1)
-    canvas = np.full((360, total_w, 3), 255, np.uint8)
-    x = 0
-    for p in panels:
-        canvas[:, x:x + p.shape[1]] = p
-        x += p.shape[1] + gap
-
-    ply = None
-    if export_pc:
-        try:
-            # da2s 刚在对比里加载过,这里复用缓存补一份点云/网格
-            _, pc_info, ply = _infer_da2(image, "da2s", True, max_depth, export_fmt)
-            infos.append(pc_info.splitlines()[-1])
-        except Exception as e:
-            infos.append(f"点云导出失败: {e}")
-    return canvas, "\n".join(infos), ply
-
-
 MODES = {
-    "横向对比(全部模型)": infer_compare,
     "YOLOE 零样本分割": infer_seg,
     "Depth Anything V2 Small": infer_da2,
-    "Depth Anything V2 Base": infer_da2_base,
 }
 
 
@@ -235,13 +153,13 @@ with gr.Blocks(title="视觉小工具:零样本分割 + 单目深度") as demo:
         with gr.Column(scale=1, min_width=380):
             gr.Markdown("### 输入")
             input_img = gr.Image(label="原图", type="numpy", height=380)
-            mode = gr.Radio(list(MODES.keys()), value="横向对比(全部模型)", label="模型")
+            mode = gr.Radio(list(MODES.keys()), value="YOLOE 零样本分割", label="模型")
             classes_text = gr.Textbox(
                 value="person,car,dog,bicycle",
                 label="类别(仅 YOLOE 分割用,逗号分隔,任意概念)",
                 visible=True)
             conf = gr.Slider(0.05, 0.9, value=0.25, step=0.05, label="置信度阈值(仅 YOLOE)")
-            export_pc = gr.Checkbox(value=False, label="导出点云/网格 .ply(DA V2 / 对比模式)")
+            export_pc = gr.Checkbox(value=False, label="导出点云/网格 .ply(DA V2 模式)")
             max_depth = gr.Slider(2, 50, value=10, step=1,
                                   label="场景最远距离/米(近似尺度)")
             export_fmt = gr.Radio(["点云", "网格"], value="点云",

@@ -16,10 +16,9 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # DA V2 权重:优先项目内 models/(扁平文件,整个文件夹拷走即可部署),
 # 缺失时回退 HuggingFace 本地缓存。两条路径都只读本地、不联网。
-_DA2 = {
-    "da2s": ("models/da2-small", "depth-anything/Depth-Anything-V2-Small-hf"),
-    "da2b": ("models/da2-base", "depth-anything/Depth-Anything-V2-Base-hf"),
-}
+# 只保留 Small:实测与 Base 深度图相关性 0.996 却快 2.25×,见 README。
+_DA2_DIR = "models/da2-small"
+_DA2_REPO = "depth-anything/Depth-Anything-V2-Small-hf"
 
 # 模型懒加载:首次用到某个模型时才加载权重,避免启动慢
 _cache = {}
@@ -32,26 +31,25 @@ def get_model(name):
         from ultralytics import YOLOE
         # 绝对路径:否则 ultralytics 按当前工作目录找权重,找不到会尝试联网下载
         m = YOLOE(os.path.join(_ROOT, "yoloe-26s-seg.pt"))
-    elif name in ("da2s", "da2b"):
+    elif name == "da2s":
         # 只读本地,不联网。默认 pipeline(model="repo_id") 会先向 HF Hub 发一次版本核对请求,
         # 离线时退避重试 5 次(约 23 s)才回退缓存,纯属白等;local_files_only=True 直接读本地。
         # (YOLOE 的 mobileclip2_b.ts 由 ultralytics 按工作目录解析,故需在项目根目录运行。)
         from transformers import (AutoImageProcessor, AutoModelForDepthEstimation,
                                   pipeline)
-        rel, repo = _DA2[name]
-        local = os.path.join(_ROOT, rel)
-        src = local if os.path.isdir(local) else repo  # 项目内优先,其次 HF 本地缓存
+        local = os.path.join(_ROOT, _DA2_DIR)
+        src = local if os.path.isdir(local) else _DA2_REPO  # 项目内优先,其次 HF 本地缓存
         try:
             model = AutoModelForDepthEstimation.from_pretrained(src, local_files_only=True)
             image_processor = AutoImageProcessor.from_pretrained(src, local_files_only=True)
         except OSError as e:
             raise RuntimeError(
-                f"加载 DA V2 权重失败:项目内 {rel}/ 与 HuggingFace 本地缓存都没有 "
-                f"{repo},且已设为只读本地(不联网)。"
+                f"加载 DA V2 权重失败:项目内 {_DA2_DIR}/ 与 HuggingFace 本地缓存都没有 "
+                f"{_DA2_REPO},且已设为只读本地(不联网)。"
                 f"参考 README「模型权重与离线部署」准备权重。"
             ) from e
-        source = f"项目内 {rel}/" if src == local else f"HF 缓存 {repo}"
-        print(f"[core] 加载 DA V2 {name} ← {source}")
+        print(f"[core] 加载 DA V2 Small ← "
+              f"{f'项目内 {_DA2_DIR}/' if src == local else f'HF 缓存 {_DA2_REPO}'}")
         m = pipeline("depth-estimation", model=model, image_processor=image_processor,
                      device=DEVICE)
     else:

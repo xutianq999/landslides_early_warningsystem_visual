@@ -1,31 +1,25 @@
-"""单目深度估计演示:Depth Anything V2(零样本,无需训练)。
+"""单目深度估计演示:Depth Anything V2 Small(零样本,无需训练)。
 
 用法:
-    python demo_depth.py <图片路径> [--model small|base] [--ply] [--max-depth 10] [--fov 60]
+    python demo_depth.py <图片路径> [--ply] [--max-depth 10] [--fov 60]
 
 输出 <图片名>_depth.png(深度热力图,越亮越近);
 加 --ply 额外输出 <图片名>_pointcloud.ply(RGB 点云,MeshLab/CloudCompare 可开)。
-首次运行自动从 HuggingFace 下载权重(约 100~400MB)。
+权重从项目内 models/ 读取(只读本地,不联网),见 README「模型权重与离线部署」。
 """
 
 import argparse
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image
-from transformers import pipeline
 
-MODELS = {
-    "small": "depth-anything/Depth-Anything-V2-Small-hf",   # 最快
-    "base": "depth-anything/Depth-Anything-V2-Base-hf",    # 略慢,更细
-}
+from core import DEVICE, get_model
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="单目深度估计")
     parser.add_argument("image", nargs="?", default="test.jpg", help="输入图片路径")
-    parser.add_argument("--model", default="small", choices=MODELS.keys())
     parser.add_argument("--ply", action="store_true", help="同时导出 RGB 点云 .ply")
     parser.add_argument("--mesh", action="store_true",
                         help="导出三角网格 .ply(表面连续,无点云远景稀疏感)")
@@ -41,9 +35,8 @@ def main():
     if not image.exists():
         raise SystemExit(f"找不到图片: {image}")
 
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"加载 {MODELS[args.model]} (device={device}) ...")
-    depth_estimator = pipeline("depth-estimation", model=MODELS[args.model], device=device)
+    print(f"加载 DA V2 Small (device={DEVICE}) ...")
+    depth_estimator = get_model("da2s")
 
     print(f"推理 {image.name} ...")
     import time

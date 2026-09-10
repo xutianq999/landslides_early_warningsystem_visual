@@ -25,9 +25,7 @@ python3 -m venv .venv                # 已建好可跳过
 | 模型选项 | 能力 | 备注 |
 |---|---|---|
 | YOLOE 零样本分割 | 文本提示任意类别的实例分割 | 类别框逗号分隔,任意概念,可中文 |
-| Depth Anything V2 Small | 相对深度,速度快(121 ms) | 日常够用 |
-| Depth Anything V2 Base | 相对深度,边界更准 | 精度优先时用 |
-| 横向对比 | YOLOE + 两个 DA V2 一起跑,拼图 + 耗时/内存 | |
+| Depth Anything V2 Small | 相对深度,速度快(127 ms) | 唯一深度模型 |
 
 - 每个模型首次推理时才加载权重(懒加载),之后常驻内存
 - 选分割模型时才显示类别输入和置信度滑块
@@ -117,7 +115,7 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 .venv/bin/python demo_camera.py --classes "person,phone,cup"
 
 # 3. 相对深度(Depth Anything V2 Small)
-.venv/bin/python demo_depth.py 图片.jpg [--model base]
+.venv/bin/python demo_depth.py 图片.jpg
 
 # 3b. 深度 + 点云/网格导出(.ply,MeshLab/CloudCompare/Blender 可直接打开)
 .venv/bin/python demo_depth.py 图片.jpg --ply  --max-depth 15 --fov 60   # 点云
@@ -135,14 +133,15 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 - **文件**:二进制 PLY,每点 `x y z float32 + r g b uint8`,网格额外带三角面;超 150 万点自动抽稀
 - 网页台:勾选「导出点云/网格」+ 选格式 + 调最远距离 → 推理后可在底部预览并下载
 
-## 模型对比(Mac MPS 实测,640 级输入,热身后)
+## 模型对比(Mac MPS 实测,热身后)
 
 | 模型 | 速度 | 深度类型 | 边界质量 | 部署友好度 |
 |---|---|---|---|---|
 | YOLOE-26s-seg | ~37 ms | —(分割) | 好 | ★★★ ultralytics 一条链导 TensorRT |
-| DA V2 Small | 121 ms | 相对 | 好 | ★★ 需走 transformers→ONNX |
-| DA V2 Base | ~250 ms | 相对 | 更好 | ★★ 同上 |
+| DA V2 Small | 127 ms | 相对 | 好 | ★★ 需走 transformers→ONNX |
 
+DA V2 Base 实测无实质收益(Small 相关性 0.996、成图肉眼无差,却慢 2.25×、大 4×),
+已弃用,详见「模型权重与离线部署」。
 弃用原因:YOLO26-depth 边界质量一般且深度能力被 DA V2 取代;DA3 质量最好但官方生态全在 CUDA、依赖链重,边缘部署不友好。
 
 ## 概念速查
@@ -182,9 +181,6 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 mkdir -p models/da2-small
 cp -L ~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-Small-hf/snapshots/*/* models/da2-small/
 ```
-
-> 网页台仍保留 Base / 横向对比选项用于临时比较:未打包 Base 权重时它们会回退到
-> HuggingFace 本地缓存;新机器上若没有缓存会直接报错。
 
 ## 部署到 Orin NX 的步骤
 
