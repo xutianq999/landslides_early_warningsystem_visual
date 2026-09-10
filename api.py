@@ -72,9 +72,13 @@ def devices():
     """每台设备:设备号、名称/位置(来自 config.devices)、帧数、首末上报、当前报警等级。
 
     含已登记但暂无数据的设备;`rtsp_url` 不回传(内含相机口令),只给 `has_rtsp_url`。
+    `params` 是该设备生效的计算参数(类别/FOV/ROI/报警阈值等),同样不含 rtsp_url。
     """
     with _conn() as conn:
-        return dbm.list_devices(conn)
+        rows = dbm.list_devices(conn)
+    for d in rows:
+        d["params"] = config.safe_params(d["device_id"])
+    return rows
 
 
 @app.get("/api/v1/devices/{device_id}", tags=["设备"], summary="单台设备状态",
@@ -84,6 +88,7 @@ def device(device_id: str):
         d = dbm.get_device(conn, device_id)
     if not d:
         raise HTTPException(status_code=404, detail=f"设备不存在: {device_id}")
+    d["params"] = config.safe_params(device_id)
     return d
 
 

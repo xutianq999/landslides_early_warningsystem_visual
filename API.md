@@ -23,7 +23,8 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 | 键 | 默认 | 环境变量 | 说明 |
 |---|---|---|---|
 | `device_id` | `site1` | `MONITOR_DEVICE_ID` | 当前生效的设备号(点位标识),多节点汇入平台时用它区分 |
-| `devices` | `{}` | — | 设备元信息 `{"<device_id>": {"name","location","rtsp_url"}}`,自动登记进 `devices` 表 |
+| `defaults` | `{}` | — | 所有设备共用的参数默认值(可被单设备覆盖) |
+| `devices` | `{}` | — | 每设备配置 `{"<device_id>": {name/location/rtsp_url/参数...}}`,自动登记进 `devices` 表 |
 | `db_path` | `data/monitor.db` | `MONITOR_DB` | SQLite 文件(相对项目根) |
 | `images_dir` | `images` | `MONITOR_IMAGES_DIR` | 网页端抓图落盘目录 |
 | `api_host` | `127.0.0.1` | `MONITOR_API_HOST` | 监听地址 |
@@ -55,6 +56,45 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
   地址本身只供本机抓图模块使用。
 
 > 默认设备号是占位值 `site1`,上线前请改掉;命令行入库时若仍是占位值会打印提醒。
+
+### 每设备参数(多设备配置不同)
+
+不同点位可以有不同的分割类别、相机 FOV、ROI 与报警阈值。取值优先级:
+
+```
+命令行参数  >  config.json 的 devices[<设备号>]  >  config.json 的 defaults  >  代码内置默认
+```
+
+可覆盖的参数:`classes`、`conf`、`max_depth`、`fov`、`roi`、`roi_auto`、`roi_target`
+(采集/推理);`window`、`persist`、`t1`、`t2`、`t3`(报警);`rtsp_url`、`interval_min`
+(抓图,供后续模块);`name`、`location`(展示)。
+
+```json
+{
+  "device_id": "HIK-01",
+  "defaults": { "conf": 0.15, "fov": 60.0, "window": 24, "persist": 2,
+                "t1": 1.5, "t2": 3.0, "t3": 5.0, "interval_min": 5 },
+  "devices": {
+    "HIK-01": { "name": "1号坡面", "rtsp_url": "rtsp://…/101",
+                "fov": 58.0, "roi_auto": true, "roi_target": "both" },
+    "HIK-02": { "name": "2号沟口", "rtsp_url": "rtsp://…/101",
+                "classes": "deep valley,rock,tree,grass,person,truck",
+                "fov": 72.0, "roi_target": "debris",
+                "t1": 1.8, "t2": 3.5, "t3": 5.5 }
+  }
+}
+```
+
+用法不变,`--device` 选点位即可,参数自动跟着走:
+
+```bash
+.venv/bin/python features.py ./snapshots --db --device HIK-02
+.venv/bin/python alarm.py --db --device HIK-02          # 用该点位的阈值
+.venv/bin/python features.py 3.jpg --fov 90 --device HIK-02   # 命令行仍可临时覆盖
+```
+
+每帧入库时会把当次生效的参数写进 `frames.params`(JSON),所以**换了 FOV/类别/ROI 之后,
+历史数据是否可比一查就知道**;`GET /api/v1/devices` 的 `params` 字段给出各设备当前参数。
 
 **后续接入海康 RTSP 的做法**(尚未实现):一个点位配一个 `device_id` 和一条 `rtsp_url`,
 定时从 `rtsp://…/Streaming/Channels/101` 抓帧存盘(文件名带时间戳),再调
@@ -106,8 +146,8 @@ curl -s -H "X-API-Key: <你的key>" localhost:8000/api/v1/devices
 ## 表结构
 
 **`frames`** — 每帧一行。固定超集:44 个特征列全部建表(含 14 个 ROI 掩模列、
-3 个降雨列、8 个分割列),该帧没有的写 `NULL`(不是 `"nan"`)。无法识别的字段收进 `extra` JSON。
-唯一键 `(device_id, captured_at)`。
+3 个降雨列、8 个分割列),该帧没有的写 `NULL`(不是 `"nan"`)。无法识别的字段收进 `extra` JSON;
+`params` 记录当次生效的计算参数(FOV/类别/ROI 等)。唯一键 `(device_id, captured_at)`。
 
 **`alarms`** — 每帧的报警判定:`valid`、`score`、`top_signal`、`top_severity`、`level`(0~3)、
 `level_name`、`camera_alarm`,以及 `detail` JSON(各信号单独存 `z`/`rate`/`accel`)。

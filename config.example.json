@@ -1,10 +1,40 @@
 {
   "device_id": "HIK-01",
+  "defaults": {
+    "conf": 0.15,
+    "max_depth": 10.0,
+    "fov": 60.0,
+    "roi_auto": false,
+    "roi_target": "gully",
+    "window": 24,
+    "persist": 2,
+    "t1": 1.5,
+    "t2": 3.0,
+    "t3": 5.0,
+    "interval_min": 5
+  },
   "devices": {
     "HIK-01": {
       "name": "1号坡面",
       "location": "K12+300 左幅",
-      "rtsp_url": "rtsp://admin:<password>@192.168.1.64:554/Streaming/Channels/101"
+      "rtsp_url": "rtsp://admin:<password>@192.168.1.64:554/Streaming/Channels/101",
+      "classes": "deep valley,person,car,landslide,truck,construction vehicle",
+      "fov": 58.0,
+      "max_depth": 12.0,
+      "roi_auto": true,
+      "roi_target": "both"
+    },
+    "HIK-02": {
+      "name": "2号沟口",
+      "location": "K12+640 右幅",
+      "rtsp_url": "rtsp://admin:<password>@192.168.1.65:554/Streaming/Channels/101",
+      "classes": "deep valley,rock,tree,grass,person,truck",
+      "fov": 72.0,
+      "roi_auto": true,
+      "roi_target": "debris",
+      "t1": 1.8,
+      "t2": 3.5,
+      "t3": 5.5
     }
   },
   "db_path": "data/monitor.db",

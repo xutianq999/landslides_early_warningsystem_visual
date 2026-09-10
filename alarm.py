@@ -20,6 +20,8 @@ import sys
 import numpy as np
 import pandas as pd
 
+import config
+
 # 监控信号: (列名, 权重, 危险方向)  direction: +1 上升危险 / -1 下降危险 / 0 双向
 SIGNALS = [
     ("diff_frac", 3.0, +1),        # 深度变化面积占比 —— 形变核心指标
@@ -47,11 +49,11 @@ def parse_args():
     p = argparse.ArgumentParser(description="滑坡报警:变化率/加速度分析")
     p.add_argument("csv", nargs="?", default="features.csv", help="特征 CSV")
     p.add_argument("--out", default="alarm_result.csv", help="输出 CSV")
-    p.add_argument("--window", type=int, default=24, help="稳健基线滚动窗口(采样点数)")
-    p.add_argument("--persist", type=int, default=2, help="连续超阈值的采样点数才算报警")
-    p.add_argument("--t1", type=float, default=1.5, help="黄色阈值")
-    p.add_argument("--t2", type=float, default=3.0, help="橙色阈值")
-    p.add_argument("--t3", type=float, default=5.0, help="红色阈值")
+    p.add_argument("--window", type=int, default=None, help="稳健基线滚动窗口(默认 24)")
+    p.add_argument("--persist", type=int, default=None, help="连续超阈值点数才算报警(默认 2)")
+    p.add_argument("--t1", type=float, default=None, help="黄色阈值(默认 1.5)")
+    p.add_argument("--t2", type=float, default=None, help="橙色阈值(默认 3.0)")
+    p.add_argument("--t3", type=float, default=None, help="红色阈值(默认 5.0)")
     p.add_argument("--json", action="store_true", help="同时打印最新一条的 JSON")
     p.add_argument("--db", nargs="?", const="", default=None, metavar="PATH",
                    help="从 SQLite 读特征并把报警写回(可选路径;只写 --db 用 config 默认)")
@@ -170,10 +172,17 @@ def analyze(df: pd.DataFrame, window: int, persist: int,
 def main():
     args = parse_args()
 
+    # 阈值来源:命令行 > 该设备配置 > 内置默认(现场阈值必须按点位标定,见 PIPELINE.md)
+    dc = config.for_device(args.device)
+    window = args.window if args.window is not None else int(dc.get("window", 24))
+    persist = args.persist if args.persist is not None else int(dc.get("persist", 2))
+    t1 = args.t1 if args.t1 is not None else float(dc.get("t1", 1.5))
+    t2 = args.t2 if args.t2 is not None else float(dc.get("t2", 3.0))
+    t3 = args.t3 if args.t3 is not None else float(dc.get("t3", 5.0))
+
     conn = None
     device = None
     if args.db is not None:
-        import config
         import db as dbm
         device = args.device or config.CONFIG["device_id"]
         conn = dbm.connect(args.db or None)
@@ -189,8 +198,8 @@ def main():
         if len(df) == 0:
             sys.exit("特征表为空")
 
-    result = analyze(df, args.window, args.persist,
-                     thresholds=(args.t1, args.t2, args.t3))
+    print(f"参数: window={window} persist={persist} 阈值={t1}/{t2}/{t3}")
+    result = analyze(df, window, persist, thresholds=(t1, t2, t3))
     result.to_csv(args.out, index=False)
 
     n_alert = int((result["level"] > 0).sum())

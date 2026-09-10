@@ -25,7 +25,7 @@ from pathlib import Path
 
 import config
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 META_KEY = "schema_version"
 
 # features.py 输出的特征列(原始名,顺序即建表顺序)
@@ -68,7 +68,7 @@ def to_col(key: str) -> str:
 COLS = [to_col(k) for k in FEATURE_KEYS]
 KEY_BY_COL = {to_col(k): k for k in FEATURE_KEYS}
 INT_COLS = {to_col(k) for k in INT_KEYS}
-_RESERVED = {"time", "captured_at", "image", "image_path", "device_id"}
+_RESERVED = {"time", "captured_at", "image", "image_path", "device_id", "params"}
 
 
 # ---------------------------------------------------------------- 连接 / 建表
@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS frames (
   image_path TEXT,
   created_at TEXT NOT NULL,
 {_feature_ddl()},
+  params TEXT,
   extra TEXT,
   UNIQUE(device_id, captured_at)
 );
@@ -142,7 +143,15 @@ CREATE TABLE IF NOT EXISTS devices (
 """)
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                  (META_KEY, SCHEMA_VERSION))
+    _ensure_columns(conn)
     conn.commit()
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """轻量迁移:给已存在的库补上后加的列(幂等;CREATE IF NOT EXISTS 不会加列)"""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(frames)")}
+    if "params" not in have:
+        conn.execute("ALTER TABLE frames ADD COLUMN params TEXT")
 
 
 # ---------------------------------------------------------------- 值清洗
@@ -208,10 +217,11 @@ def upsert_frames(conn: sqlite3.Connection, rows: list[dict],
     init_db(conn)
     dev = device_id or config.CONFIG["device_id"]
     register_device_from_config(conn, dev)   # 顺带登记设备元信息(config.devices)
-    cols = ["device_id", "captured_at", "image_path", "created_at", *COLS, "extra"]
+    cols = ["device_id", "captured_at", "image_path", "created_at", "params", *COLS, "extra"]
     quoted = ",".join(f'"{c}"' for c in cols)
     placeholders = ",".join("?" * len(cols))
-    update = ", ".join(f'"{c}"=excluded."{c}"' for c in [*COLS, "image_path", "extra", "created_at"])
+    update = ", ".join(f'"{c}"=excluded."{c}"'
+                       for c in [*COLS, "image_path", "params", "extra", "created_at"])
     sql = (f"INSERT INTO frames ({quoted}) VALUES ({placeholders}) "
            f"ON CONFLICT(device_id, captured_at) DO UPDATE SET {update}")
 
@@ -224,7 +234,9 @@ def upsert_frames(conn: sqlite3.Connection, rows: list[dict],
         extra = {k: v for k, v in r.items()
                  if k not in _RESERVED and k not in KEY_BY_COL.values()}
         unknown |= set(extra)
-        values = [dev, str(captured), r.get("image_path") or r.get("image"), now]
+        params = r.get("params")
+        values = [dev, str(captured), r.get("image_path") or r.get("image"), now,
+                  json.dumps(params, ensure_ascii=False, default=str) if params else None]
         values += [_int(r.get(k)) if to_col(k) in INT_COLS else _num(r.get(k))
                    for k in FEATURE_KEYS]
         values.append(json.dumps(extra, ensure_ascii=False, default=str) if extra else None)

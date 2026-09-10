@@ -31,6 +31,7 @@ import numpy as np
 from PIL import Image
 
 from core import DEVICE, backproject, get_model
+import config
 
 DEFAULT_CLASSES = "deep valley,person,car,landslide,truck,construction vehicle"
 # 动态物体:其掩码区域从几何/深度/变化统计中剔除
@@ -44,21 +45,21 @@ def parse_args():
     p = argparse.ArgumentParser(description="滑坡监测特征提取")
     p.add_argument("input", help="图片路径或目录")
     p.add_argument("--out", default="features.csv", help="输出 CSV(追加写入)")
-    p.add_argument("--classes", default=DEFAULT_CLASSES,
-                   help=f"YOLOE 分割类别,逗号分隔(默认: {DEFAULT_CLASSES})")
-    p.add_argument("--conf", type=float, default=0.15, help="分割置信度阈值")
-    p.add_argument("--max-depth", type=float, default=10.0, help="点云近似尺度")
-    p.add_argument("--fov", type=float, default=60.0, help="相机水平 FOV(度)")
+    p.add_argument("--classes", default=None,
+                   help=f"YOLOE 分割类别,逗号分隔(默认取设备配置或: {DEFAULT_CLASSES})")
+    p.add_argument("--conf", type=float, default=None, help="分割置信度阈值(默认 0.15)")
+    p.add_argument("--max-depth", type=float, default=None, help="点云近似尺度(默认 10)")
+    p.add_argument("--fov", type=float, default=None, help="相机水平 FOV 度(默认 60)")
     p.add_argument("--weather-csv", help="降雨 CSV,列: time,precip_mm")
     p.add_argument("--lat", type=float, help="纬度,在线拉取降雨(Open-Meteo)")
     p.add_argument("--lon", type=float, help="经度,在线拉取降雨")
     p.add_argument("--time", help="本帧时间(如 2026-09-09T09:00),默认取文件名/文件时间")
     p.add_argument("--roi", nargs=4, type=float, metavar=("X1", "Y1", "X2", "Y2"),
                    help="归一化 ROI(如 0.28 0.18 0.72 0.98),只在该区域内算特征")
-    p.add_argument("--roi-auto", action="store_true",
+    p.add_argument("--roi-auto", action="store_true", default=None,
                    help="自动检测中央沟壑(segment_gully)并作为 ROI")
-    p.add_argument("--roi-target", choices=["gully", "debris", "both"], default="gully",
-                   help="配合 --roi-auto:用沟壑 / 底部堆积体 / 两者合并作为 ROI")
+    p.add_argument("--roi-target", choices=["gully", "debris", "both"], default=None,
+                   help="配合 --roi-auto:用沟壑 / 底部堆积体 / 两者合并作为 ROI(默认 gully)")
     p.add_argument("--no-seg", action="store_true", help="跳过分割(也跳过动态掩码剔除)")
     p.add_argument("--db", nargs="?", const="", default=None, metavar="PATH",
                    help="同时写入 SQLite(可选路径;只写 --db 则用 config.json 里的默认路径)")
@@ -431,8 +432,30 @@ def extract_one(path: Path, args, prev: tuple | None) -> tuple[dict, tuple]:
     return out, cur
 
 
+def _resolve_args(args):
+    """参数来源优先级:命令行 > 设备配置(config: defaults 合并该设备)> 代码内置默认"""
+    dc = config.for_device(args.device)
+    args.classes = args.classes or dc.get("classes") or DEFAULT_CLASSES
+    args.conf = args.conf if args.conf is not None else float(dc.get("conf", 0.15))
+    args.max_depth = args.max_depth if args.max_depth is not None else float(dc.get("max_depth", 10.0))
+    args.fov = args.fov if args.fov is not None else float(dc.get("fov", 60.0))
+    args.roi = args.roi if args.roi is not None else dc.get("roi")
+    if args.roi_auto is None:
+        args.roi_auto = bool(dc.get("roi_auto", False))
+    target = args.roi_target or dc.get("roi_target") or "gully"
+    args.roi_target = target if target in ("gully", "debris", "both") else "gully"
+    return args
+
+
+def effective_params(args) -> dict:
+    """随帧入库的计算参数:换了 FOV/类别/ROI 后,历史数据是否可比一查便知"""
+    return {"classes": args.classes, "conf": args.conf, "max_depth": args.max_depth,
+            "fov": args.fov, "roi": args.roi, "roi_auto": bool(args.roi_auto),
+            "roi_target": args.roi_target if args.roi_auto else None}
+
+
 def main():
-    args = parse_args()
+    args = _resolve_args(parse_args())
     images = collect_images(args.input)
     if not images:
         raise SystemExit(f"没有找到图片: {args.input}")
@@ -466,8 +489,9 @@ def main():
         note = "(仍是占位默认值,建议用 --device 或 config.json 指定真实设备号)" \
             if config.is_placeholder_device(device) else ""
         conn = dbm.connect(args.db or None)
-        # 入库时带上图片绝对路径(CSV 里只记文件名,保持原样)
-        db_rows = [{**r, "image_path": str(p.resolve())} for r, p in zip(rows, images)]
+        # 入库时带上图片绝对路径(CSV 里只记文件名,保持原样)与本次计算参数
+        db_rows = [{**r, "image_path": str(p.resolve()), "params": effective_params(args)}
+                   for r, p in zip(rows, images)]
         n, unknown = dbm.upsert_frames(conn, db_rows, device_id=device)
         conn.close()
         print(f"设备号: {device} {note}".rstrip())

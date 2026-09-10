@@ -166,8 +166,9 @@ cp config.example.json config.json     # 改 device_id / devices 元信息 / 监
 .venv/bin/python api.py                        # http://127.0.0.1:8000/docs
 ```
 
-- **设备号**:每帧归属一个 `device_id`(后续一路海康 RTSP 流 = 一个点位)。CLI 用 `--device`
-  指定,否则取 `config.json`;`devices` 里可登记名称/位置/RTSP 地址,首次入库自动注册。
+- **设备号与每设备参数**:每帧归属一个 `device_id`(后续一路海康 RTSP 流 = 一个点位)。
+  CLI 用 `--device` 指定,否则取 `config.json`;不同点位可有不同的类别 / FOV / ROI / 报警阈值,
+  优先级为 `命令行 > devices[设备号] > defaults > 内置默认`,每帧的计算参数会存进 `frames.params`。
 - 写入**幂等**:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复;`NaN` 存 `NULL`。
 - 图片留磁盘(`images/`),库里只存路径;`GET /api/v1/frames/{id}/image` 按路径回传。
 - 默认只监听 `127.0.0.1` 且不鉴权;要远程拉取先改 `api_host` 并设 `api_key`。
