@@ -244,9 +244,18 @@ cp config.example.json config.json     # 改 device_id / devices 元信息 / 监
 | 存图 | 平时不存,**报警时存证据**(当前帧+基线帧) | 只存特征,图片进 `images/` |
 
 ```bash
-# 实时报警(常驻)
+# 运行时:一条连接同时跑两套系统(推荐)
+.venv/bin/python monitor.py --device HIK-01                 # 单点位
+.venv/bin/python monitor.py --all --profile profiles/HIK-01.json
+.venv/bin/python monitor.py --device HIK-01 --no-analysis   # 只跑实时报警
+
+# 只跑实时通道(轻量、可单独部署)
 .venv/bin/python realtime.py --device HIK-01 --db
 .venv/bin/python realtime.py --source /path/video.mp4 --baseline-min 0.1 --no-mask   # 无相机试跑
+
+# 算法参数配置文件(工作台工具栏也能导出/载入)
+.venv/bin/python tuning.py --from-config HIK-01 -o profiles/HIK-01.json
+.venv/bin/python tuning.py --show profiles/HIK-01.json
 ```
 
 **实时通道的关键设计**(每条都在代码注释里写了原因):
@@ -318,6 +327,8 @@ api.py                 本地只读 REST API(FastAPI),供平台拉取
 capture.py             海康 RTSP 定时抓图 → 特征 → 入库 → 刷新报警(分析通道)
 framesource.py         共享帧源:常驻连接 + 1fps 抽帧 + 环形缓冲 + 门控 + 选帧
 realtime.py            实时报警通道:基线比对 → 变化率/速率/加速度 → 报警存证据
+monitor.py             运行时:一条连接同时驱动实时报警与分析通道(多设备)
+tuning.py              算法参数配置文件(profile):导出/校验/加载,工作台与运行时共用
 deploy/capture.plist.example  launchd 常驻模板(macOS 开机自启/崩溃拉起)
 API.md                 接口文档(端点 / 字段映射 / 数据语义说明)
 config.example.json    配置模板(复制为 config.json,后者不入库)

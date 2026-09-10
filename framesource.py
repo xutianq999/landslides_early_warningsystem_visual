@@ -26,10 +26,14 @@ import numpy as np
 LOG = logging.getLogger("framesource")
 
 # 质量门控默认值(与 alarm.GATE 口径一致:夜间/雨雾/失焦的帧不可信)
+# 注意 blur_min 是**在参考分辨率下**标定的:拉普拉斯方差随分辨率变化很大
+# (同一场景,640×480 的方差可能只有 1440×1171 的 1/5),所以要把阈值按像素数缩放,
+# 否则换成子码流后所有帧都会被判"失焦",实时通道会静默地一条判定都不做。
 GATE_DEFAULTS = {
     "brightness_min": 0.12,
     "brightness_max": 0.95,
-    "blur_min": 40.0,
+    "blur_min": 40.0,                    # 参考分辨率下的阈值
+    "blur_ref_pixels": 1440 * 1171,      # 参考分辨率(现有标定值就是在这个尺度上得到的)
 }
 
 
@@ -144,6 +148,14 @@ class FrameSource(threading.Thread):
                 self._stop.wait(sleep)
         self._drop_reader("停止")
 
+    def _blur_min_effective(self, shape) -> float:
+        """按像素数把清晰度阈值缩放到当前分辨率(方差近似与像素数成正比)"""
+        ref = float(self.gate.get("blur_ref_pixels") or 0)
+        if ref <= 0:
+            return float(self.gate["blur_min"])
+        h, w = shape
+        return float(self.gate["blur_min"]) * (h * w) / ref
+
     def _grab_one(self):
         """丢弃 flush-1 帧冲刷缓冲,再解一帧——RTSP 刚连上时吐的常是陈旧帧"""
         try:
@@ -174,11 +186,12 @@ class FrameSource(threading.Thread):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, self.down_size, interpolation=cv2.INTER_AREA)
         brightness = float(small.mean()) / 255.0
-        # 清晰度必须在**全分辨率**上算:拉普拉斯方差随尺度变化很大(下采样后普遍偏低),
-        # 而门控阈值 40 是按全分辨率标定的。在缩小图上算会把正常帧大面积误判成"失焦"。
+        # 清晰度必须在**全分辨率**上算,且阈值要按分辨率缩放:
+        # 拉普拉斯方差随分辨率变化很大(同一场景 640×480 的方差可能只有 1440×1171 的 1/5),
+        # 直接用参考分辨率标定的 40 会把子码流的正常帧全判成"失焦"。
         blur = float(cv2.Laplacian(gray, cv2.CV_32F).var())
         ok = (self.gate["brightness_min"] <= brightness <= self.gate["brightness_max"]
-              and blur >= self.gate["blur_min"])
+              and blur >= self._blur_min_effective(gray.shape))
         mask_small = None
         if self.mask_fn is not None:
             try:

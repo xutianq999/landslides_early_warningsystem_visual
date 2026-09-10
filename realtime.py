@@ -30,6 +30,9 @@ LOG = logging.getLogger("realtime")
 
 # 全部可配(将来收敛进 profile);这里给的是保守起点,现场必须用"正常期"数据标定
 DEFAULTS = {
+    "tick_s": 1.0,               # 抽帧/判定节拍(秒)
+    "store_interval": 10.0,      # 落库间隔秒(判定仍按 tick_s;1Hz 存一年是 3000 万行)
+    "exclude_classes": ["person", "car", "truck", "construction vehicle"],  # 只剔这些类
     "baseline_min": 10.0,        # 基线回看时长(分钟)——测的是"这 10 分钟内的变化"
     "baseline_tol_s": 90.0,      # 基线与目标时间的容差,超出说明历史还没攒够
     "down_size": (320, 240),     # 比对用的下采样尺寸

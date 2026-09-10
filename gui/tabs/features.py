@@ -144,6 +144,29 @@ class FeaturesTab(QWidget):
         v.addWidget(self.table, 3)
         return w
 
+    def analysis_params(self) -> dict:
+        """当前分析参数(供导出配置文件)"""
+        return {"classes": self.ed_classes.toPlainText().strip(), "conf": self.sp_conf.value(),
+                "max_depth": self.sp_max.value(), "fov": self.sp_fov.value(),
+                "roi": None, "roi_auto": self.chk_roi.isChecked(),
+                "roi_target": self.cb_target.currentData()}
+
+    def apply_analysis(self, a: dict) -> None:
+        """把配置文件里的分析参数套到控件上"""
+        if not a:
+            return
+        if a.get("classes"):
+            self.ed_classes.setPlainText(str(a["classes"]))
+        for key, w in (("conf", self.sp_conf), ("max_depth", self.sp_max), ("fov", self.sp_fov)):
+            if key in a and a[key] is not None:
+                w.setValue(float(a[key]))
+        if "roi_auto" in a:
+            self.chk_roi.setChecked(bool(a["roi_auto"]))
+        if a.get("roi_target"):
+            idx = self.cb_target.findData(a["roi_target"])
+            if idx >= 0:
+                self.cb_target.setCurrentIndex(idx)
+
     def _sync_device(self):
         import features as F
         p = F.resolve_params(self.session.device)

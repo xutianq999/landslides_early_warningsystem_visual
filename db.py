@@ -441,13 +441,17 @@ def get_frame(conn, frame_id: int) -> dict | None:
     return dict(r) if r else None
 
 
-def query_alarms(conn, device_id=None, since=None, until=None,
-                 min_level=0, limit=100, offset=0, order="desc") -> list[dict]:
+def query_alarms(conn, device_id=None, since=None, until=None, min_level=0,
+                 limit=100, offset=0, order="desc", source=None) -> list[dict]:
+    """source 过滤:`realtime`(突发)或 `analysis`(趋势);不传则两者都有"""
     init_db(conn)
     where, params = ["level >= ?"], [int(min_level)]
     if device_id:
         where.append("device_id = ?")
         params.append(device_id)
+    if source:
+        where.append("source = ?")
+        params.append(source)
     _time_filter(where, params, since, until)
     sql = ("SELECT * FROM alarms WHERE " + " AND ".join(where)
            + f" ORDER BY captured_at {'DESC' if order == 'desc' else 'ASC'} LIMIT ? OFFSET ?")

@@ -142,9 +142,23 @@ def series(fields: str = Query(..., description="逗号分隔的字段名,如 di
 @app.get("/api/v1/alarms", tags=["报警"], summary="查询报警判定")
 def alarms(device_id: str | None = None, since: str | None = None, until: str | None = None,
            min_level: int = Query(0, ge=0, le=3), limit: int = Query(100, ge=1, le=5000),
-           offset: int = Query(0, ge=0), order: str = Query("desc", pattern="^(asc|desc)$")):
+           offset: int = Query(0, ge=0), order: str = Query("desc", pattern="^(asc|desc)$"),
+           source: str | None = Query(None, pattern="^(realtime|analysis)$",
+                                      description="realtime=突发报警, analysis=趋势预警")):
     with _conn() as conn:
-        items = dbm.query_alarms(conn, device_id, since, until, min_level, limit, offset, order)
+        items = dbm.query_alarms(conn, device_id, since, until, min_level, limit, offset,
+                                 order, source)
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/v1/realtime", tags=["报警"], summary="实时通道指标(变化率/速率/加速度)")
+def realtime_metrics(device_id: str | None = None, since: str | None = None,
+                     until: str | None = None, min_level: int = Query(0, ge=0, le=3),
+                     limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
+                     order: str = Query("desc", pattern="^(asc|desc)$")):
+    """1 Hz 判定、默认 10 s 落库的变化率序列;报警由实时通道产生(source=realtime)。"""
+    with _conn() as conn:
+        items = dbm.query_realtime(conn, device_id, since, until, min_level, limit, offset, order)
     return {"count": len(items), "items": items}
 
 

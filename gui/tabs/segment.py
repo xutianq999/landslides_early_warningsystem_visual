@@ -343,6 +343,40 @@ class SegmentTab(QWidget):
         h, w = mask.shape
         return 0 <= x < w and 0 <= y < h and mask[y, x] > 0
 
+    def segmentation_params(self) -> dict:
+        """当前沟壑分割方法与参数(供导出配置文件)"""
+        kind, method = self.method_combo.currentData()
+        if kind != "gully":
+            return {}
+        return {"method": method, **self.params()}
+
+    def apply_profile(self, seg: dict) -> None:
+        """把配置文件里的分割方法与参数套到控件上"""
+        if not seg:
+            return
+        method = seg.get("method")
+        if method:
+            for i, (kind, m, _label) in enumerate(METHODS):
+                if kind == "gully" and m == method:
+                    self.method_combo.setCurrentIndex(i)
+                    break
+        d = segment_gully.GULLY_DEFAULTS
+
+        def pair(w0, w1, val, fallback):
+            v = val or fallback
+            w0.setValue(float(v[0]))
+            w1.setValue(float(v[1]))
+
+        pair(self.sp_y0, self.sp_y1, seg.get("y_range"), d["y_range"])
+        pair(self.sp_xl0, self.sp_xl1, seg.get("x_left"), d["x_left"])
+        pair(self.sp_xr0, self.sp_xr1, seg.get("x_right"), d["x_right"])
+        self.sp_jump.setValue(int(seg.get("max_jump", d["max_jump"])))
+        self.sp_fill.setValue(int(seg.get("fill_window", d["fill_window"])))
+        self.sp_es.setValue(float(seg.get("extend_start", d["extend_start"])))
+        self.sp_ee.setValue(float(seg.get("extend_end", d["extend_end"])))
+        self.sp_ex.setValue(float(seg.get("extend_expand", d["extend_expand"])))
+        self._recompute()
+
     # ---------------------------------------------------------------- 导出
     def _export(self, what: str):
         if not self._result:

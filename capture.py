@@ -151,23 +151,17 @@ def device_rain(device: str, when: datetime) -> dict | None:
     return F.rain_from_api(dc["lat"], dc["lon"], when)
 
 
-def process_image(path: Path, device: str, when: datetime,
-                  rain: dict | None = None) -> dict:
-    """已有图片 → 特征 → 入库(用该设备参数)。返回特征行。"""
-    import cv2
+def process(pil, device: str, when: datetime, rain: dict | None = None,
+            image_path: Path | None = None, overrides: dict | None = None,
+            db_path=None) -> dict:
+    """PIL 图 → 特征 → 入库(用该设备参数,可被 overrides / 配置文件覆盖)。返回特征行。"""
+    import db as dbm
     import features as F
-    import segment_gully
 
-    p = F.resolve_params(device)
-    pil = Image.open(path).convert("RGB")
-
+    p = {**F.resolve_params(device), **(overrides or {})}
     roi_mask, extra_masks = None, None
     if p["roi_auto"]:
-        bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-        res = segment_gully.detect_gully(bgr)
-        key = {"gully": "mask", "debris": "debris", "both": "mask_all"}[p["roi_target"]]
-        roi_mask = res[key] > 0
-        extra_masks = {"gully": res["mask"], "debris": res["debris"]}
+        roi_mask, extra_masks, _res = F.auto_roi(pil, p)   # 分割方法/参数也从配置来
 
     prev = load_prev(device)
     classes = [c.strip() for c in p["classes"].split(",") if c.strip()]
@@ -178,12 +172,13 @@ def process_image(path: Path, device: str, when: datetime,
     if rain:
         row.update(rain)
 
-    params = {k: p[k] for k in ("classes", "conf", "max_depth", "fov",
-                                "roi", "roi_auto", "roi_target")}
-    conn = dbm.connect()
+    params = {k: p.get(k) for k in ("classes", "conf", "max_depth", "fov", "roi",
+                                    "roi_auto", "roi_target", "gully")}
+    # 传库路径而不是连接:SQLite 连接不能跨线程用,而分析可能跑在子线程里
+    conn = dbm.connect(db_path)
     try:
-        dbm.upsert_frames(conn,
-                          [{**row, "image_path": str(path.resolve()), "params": params}],
+        dbm.upsert_frames(conn, [{**row, "params": params,
+                                  "image_path": str(image_path.resolve()) if image_path else None}],
                           device_id=device)
     finally:
         conn.close()
@@ -191,14 +186,48 @@ def process_image(path: Path, device: str, when: datetime,
     return row
 
 
-def refresh_alarm(device: str, limit: int = 500) -> dict | None:
+def process_image(path: Path, device: str, when: datetime, rain: dict | None = None,
+                  overrides: dict | None = None, db_path=None) -> dict:
+    """已有图片文件 → 特征 → 入库"""
+    return process(Image.open(path).convert("RGB"), device, when, rain, path, overrides, db_path)
+
+
+def sample_from_source(source, device: str, when: datetime | None = None, do_alarm: bool = True,
+                       overrides: dict | None = None, pick_sharpest: bool = True, db_path=None):
+    """从**共享帧源**取一帧走完整分析链路(抓帧已由帧源完成,这里不再建连)。
+
+    默认用 sharpest_recent() 在最近若干帧里挑最清晰的一张:1 fps 下一分钟有 60 个候选,
+    挑最清晰的能明显提升深度质量、减少误判(深度对运动模糊/雨滴遮挡很敏感)。
+    成功返回特征行(dict),没有可用帧时返回 None。
+    """
+    import cv2
+    when = when or datetime.now()
+    got = source.sharpest_recent(None) if pick_sharpest else None
+    if got is None:
+        got = source.latest_full()
+    if got is None:
+        LOG.warning("设备 %s 帧源暂无可用帧,跳过本次分析", device)
+        return None
+    _ts, blur, bgr = got
+    path = save_snapshot(bgr, device, when)
+    row = process(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)), device, when,
+                  rain=device_rain(device, when), image_path=path, overrides=overrides,
+                  db_path=db_path)
+    if do_alarm:
+        refresh_alarm(device, db_path=db_path)
+    LOG.info("设备 %s 分析完成: %s(选帧清晰度 %.1f)diff_frac=%s",
+             device, path.name, blur, row.get("diff_frac"))
+    return row
+
+
+def refresh_alarm(device: str, limit: int = 500, db_path=None) -> dict | None:
     """用该设备的阈值重算尾部窗口的报警等级并写回"""
     import alarm
     dc = config.for_device(device)
     window = int(dc.get("window", 24))
     persist = int(dc.get("persist", 2))
     thresholds = (float(dc.get("t1", 1.5)), float(dc.get("t2", 3.0)), float(dc.get("t3", 5.0)))
-    conn = dbm.connect()
+    conn = dbm.connect(db_path)
     try:
         df = dbm.load_frames_df(conn, device_id=device, limit=limit)
         if len(df) == 0:

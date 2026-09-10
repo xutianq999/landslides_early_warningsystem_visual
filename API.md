@@ -111,7 +111,8 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 | GET | `/frames/{id}` | 单帧全字段 | — |
 | GET | `/frames/{id}/image` | 该帧抓图(只读项目目录内文件) | — |
 | GET | `/series` | 指定字段的时间序列 | `fields`(逗号分隔), `device_id`, `since`, `until`, `limit` |
-| GET | `/alarms` | 报警查询 | `device_id`, `since`, `until`, `min_level`, `limit`, `offset` |
+| GET | `/realtime` | 实时通道指标(变化率/速率/加速度) | `device_id`, `since`, `until`, `min_level`, `limit` |
+| GET | `/alarms` | 报警查询 | `device_id`, `since`, `until`, `min_level`, `source`(`realtime`/`analysis`), `limit`, `offset` |
 | GET | `/alarms/latest` | 每台设备当前等级 | `device_id` |
 | GET | `/export.csv` | 特征帧 CSV 导出 | `device_id`, `since`, `until`, `limit` |
 
@@ -149,6 +150,10 @@ curl -s -o frame.jpg "localhost:8000/api/v1/frames/12/image"
 **`alarms`** — 每帧的报警判定:`valid`、`score`、`top_signal`、`top_severity`、`level`(0~3)、
 `level_name`、`camera_alarm`,以及 `detail` JSON(各信号单独存 `z`/`rate`/`accel`)。
 主键 `(device_id, captured_at)`。
+
+**`realtime_metrics`** — 实时通道指标(1 Hz 判定、默认 10 s 落库):`change_frac`(变化率)、
+`valid_frac`(剔除遮挡后的有效占比)、`accel`、`shift_px`、`level`/`level_name`、`reasons`、`params`。
+与分析通道的 `frames` **分表**——两套语义不同,混在一张表会大面积 NULL。
 
 **`devices`** — 设备号 + 元信息(`name`、`location`、`rtsp_url`),首次入库自动登记。
 

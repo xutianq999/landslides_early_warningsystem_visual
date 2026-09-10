@@ -412,13 +412,9 @@ def extract_one(path: Path, args, prev: tuple | None) -> tuple[dict, tuple]:
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
     roi_mask, extra_masks = None, None
     if getattr(args, "roi_auto", False):
-        import segment_gully
-        bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-        res = segment_gully.detect_gully(bgr)
-        target = getattr(args, "roi_target", "gully")
-        key = {"gully": "mask", "debris": "debris", "both": "mask_all"}[target]
-        roi_mask = res[key] > 0
-        extra_masks = {"gully": res["mask"], "debris": res["debris"]}
+        roi_mask, extra_masks, _res = auto_roi(
+            pil, {"roi_target": getattr(args, "roi_target", "gully"),
+                  "gully": getattr(args, "gully", None) or {}})
     row, cur = features_from_image(pil, classes=classes, conf=args.conf,
                                    max_depth=args.max_depth, fov=args.fov, prev=prev,
                                    use_seg=not args.no_seg, roi=args.roi, roi_mask=roi_mask,
@@ -435,7 +431,9 @@ def extract_one(path: Path, args, prev: tuple | None) -> tuple[dict, tuple]:
 def resolve_params(device_id: str | None = None) -> dict:
     """按设备解析参数:devices[设备号] > defaults > 内置默认。
 
-    app.py / capture.py / CLI 共用同一套默认值,避免各写一份。
+    app.py / capture.py / realtime.py / CLI 共用同一套默认值,避免各写一份。
+    `gully` 是沟壑分割方法的参数(传给 segment_gully.detect_gully),以前只在命令行
+    能调、运行时永远吃默认值,这里一并带出来。
     """
     dc = config.for_device(device_id)
     target = dc.get("roi_target") or "gully"
@@ -447,7 +445,22 @@ def resolve_params(device_id: str | None = None) -> dict:
         "roi": dc.get("roi"),
         "roi_auto": bool(dc.get("roi_auto", False)),
         "roi_target": target if target in ("gully", "debris", "both") else "gully",
+        "gully": dict(dc.get("gully") or {}),
     }
+
+
+def auto_roi(pil: Image.Image, params: dict | None = None):
+    """自动检测沟壑/堆积体作为 ROI。
+
+    返回 (roi_mask, extra_masks, res)。所有调用方共用这一个入口,分割方法与其参数
+    才能真正从配置/配置文件里生效(否则每个调用点各写一遍 detect_gully(...) 吃默认值)。
+    """
+    import segment_gully
+    p = params or {}
+    bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    res = segment_gully.detect_gully(bgr, **(p.get("gully") or {}))
+    key = {"gully": "mask", "debris": "debris", "both": "mask_all"}[p.get("roi_target", "gully")]
+    return res[key] > 0, {"gully": res["mask"], "debris": res["debris"]}, res
 
 
 def _resolve_args(args):
@@ -461,14 +474,16 @@ def _resolve_args(args):
     if args.roi_auto is None:
         args.roi_auto = p["roi_auto"]
     args.roi_target = args.roi_target or p["roi_target"]
+    args.gully = getattr(args, "gully", None) or p["gully"]
     return args
 
 
 def effective_params(args) -> dict:
-    """随帧入库的计算参数:换了 FOV/类别/ROI 后,历史数据是否可比一查便知"""
+    """随帧入库的计算参数:换了 FOV/类别/ROI/分割方法后,历史数据是否可比一查便知"""
     return {"classes": args.classes, "conf": args.conf, "max_depth": args.max_depth,
             "fov": args.fov, "roi": args.roi, "roi_auto": bool(args.roi_auto),
-            "roi_target": args.roi_target if args.roi_auto else None}
+            "roi_target": args.roi_target if args.roi_auto else None,
+            "gully": args.gully if args.roi_auto else None}
 
 
 def main():

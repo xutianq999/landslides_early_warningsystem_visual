@@ -57,6 +57,15 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.device_combo)
 
         tb.addSeparator()
+        act_exp = QAction("导出配置…", self)
+        act_exp.setToolTip("把当前分割/分析参数存成 profiles/*.json,可给 monitor.py 用")
+        act_exp.triggered.connect(self.export_profile)
+        tb.addAction(act_exp)
+        act_imp = QAction("载入配置…", self)
+        act_imp.triggered.connect(self.import_profile)
+        tb.addAction(act_imp)
+
+        tb.addSeparator()
         act_about = QAction("关于", self)
         act_about.triggered.connect(self.about)
         tb.addAction(act_about)
@@ -72,11 +81,15 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.segment_tab = SegmentTab(self.session, self.runner)
         self.segment_tab.view.coords.connect(self._on_coords)
+        self.depth_tab = DepthTab(self.session, self.runner)
+        self.features_tab = FeaturesTab(self.session, self.runner)
+        self.capture_tab = CaptureTab(self.session, self.runner)
+        self.data_tab = DataTab(self.session, self.runner)
         self.tabs.addTab(self.segment_tab, "① 分割")
-        self.tabs.addTab(DepthTab(self.session, self.runner), "② 深度")
-        self.tabs.addTab(FeaturesTab(self.session, self.runner), "③ 特征")
-        self.tabs.addTab(CaptureTab(self.session, self.runner), "④ 抓图")
-        self.tabs.addTab(DataTab(self.session, self.runner), "⑤ 数据")
+        self.tabs.addTab(self.depth_tab, "② 深度")
+        self.tabs.addTab(self.features_tab, "③ 特征")
+        self.tabs.addTab(self.capture_tab, "④ 抓图")
+        self.tabs.addTab(self.data_tab, "⑤ 数据")
         self.setCentralWidget(self.tabs)
 
     # ---------------------------------------------------------------- 状态栏
@@ -121,6 +134,46 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "打开失败", f"读不到图片:\n{path}")
             return
         self.statusBar().showMessage(f"已载入 {path}", 4000)
+
+    # ---------------------------------------------------------------- 配置文件
+    def export_profile(self):
+        """把当前界面上的分割/分析参数导出成配置文件(交给运行时用)"""
+        import tuning as pm
+        prof = pm.build(self.session.device)
+        seg = self.segment_tab.segmentation_params()
+        if seg:
+            prof["segmentation"].update(seg)
+        prof["analysis"].update(self.features_tab.analysis_params())
+        default = str(config.ROOT / "profiles" / f"{self.session.device}.json")
+        path, _ = QFileDialog.getSaveFileName(self, "导出配置文件", default, "JSON (*.json)")
+        if not path:
+            return
+        try:
+            p = pm.save(path, prof)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+            return
+        QMessageBox.information(
+            self, "已导出",
+            f"{p}\n\n设备 {self.session.device}\n分割方法: {prof['segmentation'].get('method')}\n\n"
+            f"运行时用法:\n  .venv/bin/python monitor.py --device {self.session.device} --profile {path}")
+
+    def import_profile(self):
+        import tuning as pm
+        path, _ = QFileDialog.getOpenFileName(self, "载入配置文件",
+                                              str(config.ROOT / "profiles"), "JSON (*.json)")
+        if not path:
+            return
+        try:
+            prof = pm.load(path)
+        except Exception as e:
+            QMessageBox.critical(self, "载入失败", str(e))
+            return
+        self.segment_tab.apply_profile(prof.get("segmentation") or {})
+        self.features_tab.apply_analysis(prof.get("analysis") or {})
+        QMessageBox.information(self, "已载入",
+                                f"{path}\nversion={prof.get('version')}\n"
+                                f"分割方法: {(prof.get('segmentation') or {}).get('method')}")
 
     def about(self):
         QMessageBox.information(
