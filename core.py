@@ -12,6 +12,15 @@ from PIL import Image
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# DA V2 权重:优先项目内 models/(扁平文件,整个文件夹拷走即可部署),
+# 缺失时回退 HuggingFace 本地缓存。两条路径都只读本地、不联网。
+_DA2 = {
+    "da2s": ("models/da2-small", "depth-anything/Depth-Anything-V2-Small-hf"),
+    "da2b": ("models/da2-base", "depth-anything/Depth-Anything-V2-Base-hf"),
+}
+
 # 模型懒加载:首次用到某个模型时才加载权重,避免启动慢
 _cache = {}
 
@@ -21,25 +30,28 @@ def get_model(name):
         return _cache[name]
     if name == "yoloe":
         from ultralytics import YOLOE
-        m = YOLOE("yoloe-26s-seg.pt")
+        # 绝对路径:否则 ultralytics 按当前工作目录找权重,找不到会尝试联网下载
+        m = YOLOE(os.path.join(_ROOT, "yoloe-26s-seg.pt"))
     elif name in ("da2s", "da2b"):
-        # 只读本地缓存,不联网。部署机常处于离线环境:默认加载会先向 HF Hub 发一次
-        # 版本核对请求,连不上时退避重试 5 次(约 23 s)才回退缓存,纯属白等;
-        # local_files_only=True 直接读缓存,缓存缺失时立刻报错,不会悬挂。
-        # (YOLOE 走本地 .pt,不涉及 HF;权重首次需在有网环境下载,见 README。)
+        # 只读本地,不联网。默认 pipeline(model="repo_id") 会先向 HF Hub 发一次版本核对请求,
+        # 离线时退避重试 5 次(约 23 s)才回退缓存,纯属白等;local_files_only=True 直接读本地。
+        # (YOLOE 的 mobileclip2_b.ts 由 ultralytics 按工作目录解析,故需在项目根目录运行。)
         from transformers import (AutoImageProcessor, AutoModelForDepthEstimation,
                                   pipeline)
-        mid = {"da2s": "depth-anything/Depth-Anything-V2-Small-hf",
-               "da2b": "depth-anything/Depth-Anything-V2-Base-hf"}[name]
+        rel, repo = _DA2[name]
+        local = os.path.join(_ROOT, rel)
+        src = local if os.path.isdir(local) else repo  # 项目内优先,其次 HF 本地缓存
         try:
-            model = AutoModelForDepthEstimation.from_pretrained(mid, local_files_only=True)
-            image_processor = AutoImageProcessor.from_pretrained(mid, local_files_only=True)
+            model = AutoModelForDepthEstimation.from_pretrained(src, local_files_only=True)
+            image_processor = AutoImageProcessor.from_pretrained(src, local_files_only=True)
         except OSError as e:
             raise RuntimeError(
-                f"本地没有 {mid} 的缓存,且加载已设为只读本地(不联网)。"
-                f"请在有网环境先运行一次完成下载,或把部署机的 "
-                f"~/.cache/huggingface/hub 一并拷贝过来。"
+                f"加载 DA V2 权重失败:项目内 {rel}/ 与 HuggingFace 本地缓存都没有 "
+                f"{repo},且已设为只读本地(不联网)。"
+                f"参考 README「模型权重与离线部署」准备权重。"
             ) from e
+        source = f"项目内 {rel}/" if src == local else f"HF 缓存 {repo}"
+        print(f"[core] 加载 DA V2 {name} ← {source}")
         m = pipeline("depth-estimation", model=model, image_processor=image_processor,
                      device=DEVICE)
     else:

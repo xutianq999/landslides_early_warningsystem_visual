@@ -126,7 +126,7 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 
 ## 点云 / 网格导出说明
 
-- **原理**:DA V2 相对深度(逆深度)→ 针孔模型反投影:`z = 1/(disp+0.1)` 归一化后乘「场景最远距离」作近似尺度;水平 FOV 定焦距(不知道相机 FOV 就用默认 60°)
+- **原理**:DA V2 相对深度(逆深度/视差)→ 针孔模型反投影:`z = 1/视差` 直接反演(不加偏移,否则陡坡坡度会饱和),再按「场景最远距离」缩放到近似米制;水平 FOV 定焦距(不知道相机 FOV 就用默认 60°)
 - **点云**:离散点,远处因透视必然稀疏(3D 点间距 ∝ 距离,面密度按 1/z² 衰减),这是几何决定的,不是丢点
 - **网格**:按深度图的规则网格连三角面 → 表面连续,没有稀疏感;相邻四角深度比超过 2 倍不连面,避免把天空和近景缝成斜膜
 - **滤波**:双边滤波压深度噪声同时保边(高斯会把物体边界糊成斜面)
@@ -152,24 +152,36 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 - **导出 TensorRT 时类别固化**:换类需重新导出;engine 文件不跨设备,须在 Orin 上导
 - **DA V2 输出逆深度**(值越大越近),本工作台已统一转成「近红远蓝」显示
 
-> `core.py` 加载 DA V2 时已固定 `local_files_only=True`,**运行时完全不联网**(直接读
-> HuggingFace 本地缓存),缓存缺失会立即报错并提示,不会卡在重试上。首次下载见下方。
+> `core.py` 加载 DA V2 时用 `local_files_only=True`,**运行时不联网**:优先读项目内
+> `models/`,再回退 HuggingFace 本地缓存;两者都没有会立即报错并提示,不会卡在重试上。
 
 ## 模型权重与离线部署
 
-| 文件 | 大小 | 用途 | 加载方式 |
+权重**随项目文件夹一起走**。新机器上只需拷贝整个目录 + `pip install -r requirements.txt`
+(**不要拷 `.venv`**,它是平台相关的)。
+
+| 位置 | 内容 | 大小 | 说明 |
 |---|---|---|---|
-| yoloe-26s-seg.pt | 31 MB | YOLOE 权重 | 本地文件(放项目根目录) |
-| mobileclip2_b.ts | 242 MB | CLIP 文本编码器(YOLOE 文本提示需要) | 本地文件 |
-| DA V2 Small / Base | 99 MB / 390 MB | 深度估计 | HuggingFace 本地缓存 |
+| 项目根 `yoloe-26s-seg.pt` | YOLOE 分割权重 | 31 MB | 必需 |
+| 项目根 `mobileclip2_b.ts` | CLIP 文本编码器 | 242 MB | YOLOE 文本提示必需 |
+| `models/da2-small/` | DA V2 Small | 95 MB | 默认深度模型 |
+| `models/da2-base/` | DA V2 Base | 372 MB | 精度优先 / 横向对比用;不用可删 |
 
-**部署到别的机器前**,在有网环境把三个权重各跑一次下全,然后拷贝:
+`models/` 里是**扁平文件**(`config.json`、`model.safetensors`、`preprocessor_config.json`),
+没有 HuggingFace 缓存那种符号链接,`cp` / `rsync` / 压缩包都能正常搬运。
+`models/` 已加入 `.gitignore`,权重不进 git(clone 后需另行拷贝)。
 
-- `yoloe-26s-seg.pt`、`mobileclip2_b.ts` → 项目根目录;
-- `~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-Small-hf`
-  (和 `-Base-hf`)→ 目标机同名路径。
+- **必须在项目根目录运行**(`cd` 进去再执行,见「快速开始」)。
+  原因:YOLOE 的 `mobileclip2_b.ts` 由 ultralytics 按当前工作目录解析,换目录会触发联网下载。
+- 从 HF 缓存重建 `models/`(解引用拷出,不需要联网):
 
-DA V2 只读本地缓存,所以漏拷会直接在启动时报错,不会静默联网。
+```bash
+for pair in "Small:da2-small" "Base:da2-base"; do
+  m=${pair%%:*}; d=${pair##*:}
+  mkdir -p models/$d
+  cp -L ~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-${m}-hf/snapshots/*/* models/$d/
+done
+```
 
 ## 部署到 Orin NX 的步骤
 
@@ -197,6 +209,7 @@ demo_camera.py         摄像头实时分割
 demo_depth.py          DA V2 深度(+ 点云/网格导出)
 requirements.txt       依赖
 test.jpg / street.jpg / 3.jpg  测试图(含各类结果输出 *_result / *_depth)
+models/                项目内自包含深度权重(da2-small / da2-base,gitignore)
 pointclouds/           网页台导出的点云/网格默认目录
 _deprecated/           弃用的 YOLO26-depth / DA3 脚本、权重与输出(可整目录删除)
 ```

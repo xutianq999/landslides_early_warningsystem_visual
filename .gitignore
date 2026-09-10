@@ -4,6 +4,8 @@
 *.onnx
 *.engine
 *.pth
+# 项目内自包含权重(DA V2 Small/Base,部署时随文件夹拷贝)
+models/
 
 # ---- 虚拟环境 ----
 .venv/
