@@ -171,7 +171,8 @@ cp config.example.json config.json     # 改 device_id / devices 元信息 / 监
   优先级为 `命令行 > devices[设备号] > defaults > 内置默认`,每帧的计算参数会存进 `frames.params`。
 - 写入**幂等**:自然键 `(device_id, captured_at)`,重跑同一帧只覆盖不重复;`NaN` 存 `NULL`。
 - 图片留磁盘(`images/`),库里只存路径;`GET /api/v1/frames/{id}/image` 按路径回传。
-- 默认只监听 `127.0.0.1` 且不鉴权;要远程拉取先改 `api_host` 并设 `api_key`。
+- 默认只监听 `127.0.0.1`(仅本机);改成 `0.0.0.0` 对局域网开放前,请确认网络边界安全
+  ——本服务**不鉴权**,任何能连上端口的人都能读取全部数据。
 
 ## 模型权重与离线部署
 

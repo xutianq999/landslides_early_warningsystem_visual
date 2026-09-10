@@ -1,8 +1,7 @@
 # 数据 API(api.py)
 
 边缘端把每帧特征与分级报警写入 SQLite,由本机 FastAPI 服务通过 HTTP 暴露,平台按需拉取。
-**当前不鉴权**(内网使用);`config.json` 里 `api_key` 一旦填上,所有 `/api/v1/*` 接口即要求
-请求头 `X-API-Key`。
+**不鉴权**,默认只监听本机。
 
 ## 启动
 
@@ -15,8 +14,8 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 
 交互式文档(FastAPI 自动生成,可直接给平台方):`http://<host>:<port>/docs`
 
-> 默认只监听 `127.0.0.1`。平台要远程拉取,需把 `api_host` 改成 `0.0.0.0`
-> ——此时**任何能访问该端口的人都能读到数据**,务必先设 `api_key`。
+> 默认只监听 `127.0.0.1`(仅本机可访问)。平台要远程拉取需把 `api_host` 改成 `0.0.0.0`,
+> 此时**任何能访问该端口的人都能读到全部数据**——本服务不鉴权,请自行确保网络边界安全。
 
 ## 配置(config.json,可用环境变量覆盖)
 
@@ -29,7 +28,6 @@ cp config.example.json config.json     # 按现场改 device_id / db_path / 监�
 | `images_dir` | `images` | `MONITOR_IMAGES_DIR` | 网页端抓图落盘目录 |
 | `api_host` | `127.0.0.1` | `MONITOR_API_HOST` | 监听地址 |
 | `api_port` | `8000` | `MONITOR_API_PORT` | 端口 |
-| `api_key` | `""`(不鉴权) | `MONITOR_API_KEY` | 非空即启用 `X-API-Key` 校验 |
 
 ## 数据怎么进库
 
@@ -126,8 +124,6 @@ curl -s "localhost:8000/api/v1/frames/latest?n=3"
 curl -s "localhost:8000/api/v1/series?fields=diff_frac,slope_mean&since=2026-09-10T00:00:00"
 curl -s "localhost:8000/api/v1/alarms?min_level=1&limit=20"
 curl -s -o frame.jpg "localhost:8000/api/v1/frames/12/image"
-# 启用鉴权后:
-curl -s -H "X-API-Key: <你的key>" localhost:8000/api/v1/devices
 ```
 
 ## 字段命名

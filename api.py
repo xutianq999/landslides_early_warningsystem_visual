@@ -7,8 +7,8 @@
 监听地址/端口/数据库路径见 config.py(config.json 或环境变量)。
 交互式文档:启动后打开 http://<host>:<port>/docs
 
-当前**不鉴权**。config.json 里的 `api_key` 一旦填上,所有 /api/v1 接口
-就会要求请求头 `X-API-Key`,无需改代码。
+**不鉴权**。默认只监听 127.0.0.1(仅本机可访问);若改成 0.0.0.0 对局域网开放,
+任何能连上该端口的人都能读取全部数据,请自行确保网络边界安全。
 """
 
 import argparse
@@ -17,7 +17,7 @@ import io
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 
 import config
@@ -35,13 +35,6 @@ app = FastAPI(
 )
 
 
-def require_key(x_api_key: str | None = Header(default=None)):
-    """config.api_key 非空时启用简单 API Key 校验(当前默认为空=不鉴权)"""
-    key = config.CONFIG.get("api_key") or ""
-    if key and x_api_key != key:
-        raise HTTPException(status_code=401, detail="无效或缺失的 X-API-Key")
-
-
 @contextmanager
 def _conn():
     conn = dbm.connect()
@@ -56,8 +49,7 @@ def root():
     return RedirectResponse("/docs")
 
 
-@app.get("/api/v1/health", tags=["系统"], summary="健康检查",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/health", tags=["系统"], summary="健康检查")
 def health():
     """探活用:返回 schema 版本、库路径与帧数。"""
     with _conn() as conn:
@@ -66,8 +58,7 @@ def health():
             "frames": s["frames"], "alarms": s["alarms"], "db_path": s["db_path"]}
 
 
-@app.get("/api/v1/devices", tags=["设备"], summary="设备列表与当前状态",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/devices", tags=["设备"], summary="设备列表与当前状态")
 def devices():
     """每台设备:设备号、名称/位置(来自 config.devices)、帧数、首末上报、当前报警等级。
 
@@ -81,8 +72,7 @@ def devices():
     return rows
 
 
-@app.get("/api/v1/devices/{device_id}", tags=["设备"], summary="单台设备状态",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/devices/{device_id}", tags=["设备"], summary="单台设备状态")
 def device(device_id: str):
     with _conn() as conn:
         d = dbm.get_device(conn, device_id)
@@ -92,8 +82,7 @@ def device(device_id: str):
     return d
 
 
-@app.get("/api/v1/frames", tags=["特征"], summary="按条件查询特征帧",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/frames", tags=["特征"], summary="按条件查询特征帧")
 def frames(device_id: str | None = None, since: str | None = None, until: str | None = None,
            limit: int = Query(100, ge=1, le=5000), offset: int = Query(0, ge=0),
            order: str = Query("desc", pattern="^(asc|desc)$")):
@@ -102,16 +91,14 @@ def frames(device_id: str | None = None, since: str | None = None, until: str | 
     return {"count": len(items), "items": items}
 
 
-@app.get("/api/v1/frames/latest", tags=["特征"], summary="最近 N 帧(看板用)",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/frames/latest", tags=["特征"], summary="最近 N 帧(看板用)")
 def frames_latest(device_id: str | None = None, n: int = Query(1, ge=1, le=1000)):
     with _conn() as conn:
         items = dbm.latest_frames(conn, n, device_id)
     return {"count": len(items), "items": items}
 
 
-@app.get("/api/v1/frames/{frame_id}", tags=["特征"], summary="单帧全字段",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/frames/{frame_id}", tags=["特征"], summary="单帧全字段")
 def frame(frame_id: int):
     with _conn() as conn:
         row = dbm.get_frame(conn, frame_id)
@@ -120,8 +107,7 @@ def frame(frame_id: int):
     return row
 
 
-@app.get("/api/v1/frames/{frame_id}/image", tags=["特征"], summary="该帧对应的抓图",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/frames/{frame_id}/image", tags=["特征"], summary="该帧对应的抓图")
 def frame_image(frame_id: int):
     with _conn() as conn:
         row = dbm.get_frame(conn, frame_id)
@@ -141,8 +127,7 @@ def frame_image(frame_id: int):
     return FileResponse(str(p))
 
 
-@app.get("/api/v1/series", tags=["特征"], summary="指定字段的时间序列",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/series", tags=["特征"], summary="指定字段的时间序列")
 def series(fields: str = Query(..., description="逗号分隔的字段名,如 diff_frac,slope_mean"),
            device_id: str | None = None, since: str | None = None, until: str | None = None,
            limit: int | None = Query(None, ge=1, le=100000)):
@@ -154,8 +139,7 @@ def series(fields: str = Query(..., description="逗号分隔的字段名,如 di
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/api/v1/alarms", tags=["报警"], summary="查询报警判定",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/alarms", tags=["报警"], summary="查询报警判定")
 def alarms(device_id: str | None = None, since: str | None = None, until: str | None = None,
            min_level: int = Query(0, ge=0, le=3), limit: int = Query(100, ge=1, le=5000),
            offset: int = Query(0, ge=0), order: str = Query("desc", pattern="^(asc|desc)$")):
@@ -164,15 +148,14 @@ def alarms(device_id: str | None = None, since: str | None = None, until: str | 
     return {"count": len(items), "items": items}
 
 
-@app.get("/api/v1/alarms/latest", tags=["报警"], summary="每台设备当前报警等级",
-         dependencies=[Depends(require_key)])
+@app.get("/api/v1/alarms/latest", tags=["报警"], summary="每台设备当前报警等级")
 def alarms_latest(device_id: str | None = None):
     with _conn() as conn:
         return dbm.latest_alarms(conn, device_id)
 
 
 @app.get("/api/v1/export.csv", tags=["导出"], summary="特征帧 CSV 导出",
-         response_class=PlainTextResponse, dependencies=[Depends(require_key)])
+         response_class=PlainTextResponse)
 def export_csv(device_id: str | None = None, since: str | None = None, until: str | None = None,
                limit: int = Query(10000, ge=1, le=1000000)):
     with _conn() as conn:
@@ -195,9 +178,9 @@ def main():
     args = ap.parse_args()
     print(f"API 文档: http://{args.host}:{args.port}/docs")
     print(f"数据库  : {dbm.resolve_db_path()}")
-    if args.host == "0.0.0.0" and not config.CONFIG.get("api_key"):
-        print("提示: 监听 0.0.0.0 且未设 api_key,局域网内任何人都能读取;"
-              "如需暴露请先在 config.json 填 api_key")
+    if args.host == "0.0.0.0":
+        print("提示: 正在监听 0.0.0.0,局域网内任何能连上该端口的人都能读取全部数据。"
+              "本服务不鉴权,请自行确保网络边界安全(只本机用就保持 127.0.0.1)")
     uvicorn.run("api:app", host=args.host, port=args.port, reload=args.reload)
 
 

@@ -18,7 +18,6 @@ DEFAULTS = {
     "images_dir": "images",        # 图片落盘目录(相对项目根)
     "api_host": "127.0.0.1",       # 默认只监听本机;平台要远程拉取再改 0.0.0.0
     "api_port": 8000,
-    "api_key": "",                 # 预留:非空则要求请求头 X-API-Key(当前不启用)
 }
 
 # 可按设备覆盖的参数(仅作文档与校验;代码用 dc.get(key, 各自内置默认))
@@ -39,7 +38,6 @@ _ENV = {
     "images_dir": "MONITOR_IMAGES_DIR",
     "api_host": "MONITOR_API_HOST",
     "api_port": "MONITOR_API_PORT",
-    "api_key": "MONITOR_API_KEY",
 }
 
 
