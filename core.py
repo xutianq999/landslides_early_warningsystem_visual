@@ -23,10 +23,25 @@ def get_model(name):
         from ultralytics import YOLOE
         m = YOLOE("yoloe-26s-seg.pt")
     elif name in ("da2s", "da2b"):
-        from transformers import pipeline
+        # 只读本地缓存,不联网。部署机常处于离线环境:默认加载会先向 HF Hub 发一次
+        # 版本核对请求,连不上时退避重试 5 次(约 23 s)才回退缓存,纯属白等;
+        # local_files_only=True 直接读缓存,缓存缺失时立刻报错,不会悬挂。
+        # (YOLOE 走本地 .pt,不涉及 HF;权重首次需在有网环境下载,见 README。)
+        from transformers import (AutoImageProcessor, AutoModelForDepthEstimation,
+                                  pipeline)
         mid = {"da2s": "depth-anything/Depth-Anything-V2-Small-hf",
                "da2b": "depth-anything/Depth-Anything-V2-Base-hf"}[name]
-        m = pipeline("depth-estimation", model=mid, device=DEVICE)
+        try:
+            model = AutoModelForDepthEstimation.from_pretrained(mid, local_files_only=True)
+            image_processor = AutoImageProcessor.from_pretrained(mid, local_files_only=True)
+        except OSError as e:
+            raise RuntimeError(
+                f"本地没有 {mid} 的缓存,且加载已设为只读本地(不联网)。"
+                f"请在有网环境先运行一次完成下载,或把部署机的 "
+                f"~/.cache/huggingface/hub 一并拷贝过来。"
+            ) from e
+        m = pipeline("depth-estimation", model=model, image_processor=image_processor,
+                     device=DEVICE)
     else:
         raise ValueError(name)
     _cache[name] = m

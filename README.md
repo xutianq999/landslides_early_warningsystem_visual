@@ -105,7 +105,7 @@ python3 -m venv .venv                # 已建好可跳过
 
 T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还原倾角,真实数据里坡度的系统偏差来自 DA V2 的仿射歧义(`d = a/z + b`),不是我们的几何代码。
 
-> 首次运行若连不上 HuggingFace 会重试 5 次再回退本地缓存(离线环境可设 `HF_HUB_OFFLINE=1`)。
+> 模型加载为只读本地缓存(不联网),见「模型权重与离线部署」。
 
 ## 命令行脚本
 
@@ -152,15 +152,24 @@ T1 是**不依赖 DA V2** 的合成测试:它证明反投影本身能精确还�
 - **导出 TensorRT 时类别固化**:换类需重新导出;engine 文件不跨设备,须在 Orin 上导
 - **DA V2 输出逆深度**(值越大越近),本工作台已统一转成「近红远蓝」显示
 
-## 首次运行自动下载
+> `core.py` 加载 DA V2 时已固定 `local_files_only=True`,**运行时完全不联网**(直接读
+> HuggingFace 本地缓存),缓存缺失会立即报错并提示,不会卡在重试上。首次下载见下方。
 
-| 文件 | 大小 | 用途 |
-|---|---|---|
-| yoloe-26s-seg.pt | 31 MB | YOLOE 权重(已在本地) |
-| mobileclip2_b.ts | 242 MB | CLIP 文本编码器(YOLOE 文本提示需要,已在本地) |
-| DA V2 Small / Base | 99 MB / 390 MB | HuggingFace 缓存 |
+## 模型权重与离线部署
 
-离线使用前先在有网环境各跑一次。
+| 文件 | 大小 | 用途 | 加载方式 |
+|---|---|---|---|
+| yoloe-26s-seg.pt | 31 MB | YOLOE 权重 | 本地文件(放项目根目录) |
+| mobileclip2_b.ts | 242 MB | CLIP 文本编码器(YOLOE 文本提示需要) | 本地文件 |
+| DA V2 Small / Base | 99 MB / 390 MB | 深度估计 | HuggingFace 本地缓存 |
+
+**部署到别的机器前**,在有网环境把三个权重各跑一次下全,然后拷贝:
+
+- `yoloe-26s-seg.pt`、`mobileclip2_b.ts` → 项目根目录;
+- `~/.cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-Small-hf`
+  (和 `-Base-hf`)→ 目标机同名路径。
+
+DA V2 只读本地缓存,所以漏拷会直接在启动时报错,不会静默联网。
 
 ## 部署到 Orin NX 的步骤
 
