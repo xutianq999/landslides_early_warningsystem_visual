@@ -277,7 +277,8 @@ class RealtimeChannel:
         d = os.path.join(self.params["alarm_dir"], self.device_id)
         os.makedirs(d, exist_ok=True)
         stamp = time.strftime("%Y%m%d%H%M%S", time.localtime(cur.ts))
-        ts, blur, frame = self.source.latest_full() or (None, None, None)
+        got = self.source.latest_full()
+        frame = got[1] if got else None
         if frame is not None:
             cv2.imwrite(os.path.join(d, f"{stamp}_cur.jpg"), frame,
                         [cv2.IMWRITE_JPEG_QUALITY, 90])
