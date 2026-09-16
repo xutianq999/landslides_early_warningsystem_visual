@@ -9,6 +9,7 @@ import config
 import core
 from gui.session import Session
 from gui.workers import TaskRunner
+from gui import style
 
 IMAGE_FILTER = "图片 (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff);;所有文件 (*)"
 
@@ -58,7 +59,7 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
         act_exp = QAction("导出配置…", self)
-        act_exp.setToolTip("把当前分割/分析参数存成 profiles/*.json,可给 monitor.py 用")
+        act_exp.setToolTip("把当前分割/分析参数存成 profiles/*.json,给 runtime.py / monitor.py 用")
         act_exp.triggered.connect(self.export_profile)
         tb.addAction(act_exp)
         act_imp = QAction("载入配置…", self)
@@ -119,7 +120,7 @@ class MainWindow(QMainWindow):
             f"参数 fov {p['fov']}° · 最远 {p['max_depth']} m · conf {p['conf']} · ROI {roi}")
         self.lbl_engine.setText(f"模型 {core._DA2_DIR} · 推理 {core.DEVICE}")
         self.lbl_params.setStyleSheet("")
-        self.lbl_engine.setStyleSheet("color: #666;")
+        self.lbl_engine.setStyleSheet(style.hint_style(self))
 
     # ---------------------------------------------------------------- 动作
     def _on_device_combo(self, text: str):
@@ -156,7 +157,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "已导出",
             f"{p}\n\n设备 {self.session.device}\n分割方法: {prof['segmentation'].get('method')}\n\n"
-            f"运行时用法:\n  .venv/bin/python monitor.py --device {self.session.device} --profile {path}")
+            f"运行时用法:\n  .venv/bin/python runtime.py            # 监视台,在下拉里选这份配置\n"
+            f"  .venv/bin/python monitor.py --device {self.session.device} --profile {path}")
 
     def import_profile(self):
         import tuning as pm

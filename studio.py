@@ -16,11 +16,13 @@ def main() -> int:
     os.chdir(os.path.dirname(os.path.abspath(__file__)))   # 必须在导入 ultralytics 之前
 
     from PySide6.QtWidgets import QApplication
+    from gui import style
     from gui.mainwindow import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName("滑坡监测工作台")
     app.setApplicationDisplayName("滑坡监测工作台")
+    style.apply(app)                      # 字号/配色统一在 gui/style.py,与 runtime.py 共用
     win = MainWindow()
     win.show()
     return app.exec()

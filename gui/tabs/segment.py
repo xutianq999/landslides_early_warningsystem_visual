@@ -20,6 +20,7 @@ import config
 import segment_color
 import segment_gully
 from gui.imageview import ImageView
+from gui import style
 
 # 界面标签 → (类别, 方法名)——把 5 种方法全部暴露出来
 METHODS = [
@@ -186,7 +187,7 @@ class SegmentTab(QWidget):
         v.addLayout(row)
 
         self.lbl_pick = QLabel("点击图像可查看该点是否落在掩模内")
-        self.lbl_pick.setStyleSheet("color:#666;")
+        self.lbl_pick.setStyleSheet(style.hint_style(self))
         self.lbl_pick.setWordWrap(True)
         v.addWidget(self.lbl_pick)
         v.addStretch()
@@ -251,7 +252,7 @@ class SegmentTab(QWidget):
         top.addWidget(self.view_combo)
         top.addStretch()
         self.lbl_info = QLabel("—")
-        self.lbl_info.setStyleSheet("color:#333;")
+        self.lbl_info.setStyleSheet(style.hint_style(self))
         top.addWidget(self.lbl_info)
         v.addLayout(top)
 

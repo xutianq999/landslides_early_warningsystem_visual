@@ -4,11 +4,12 @@ import sys
 
 from PySide6.QtCore import QProcess, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 import config
 import db as dbm
+from gui import style
 
 FRAME_COLS = ["captured_at", "device_id", "diff_frac", "slope_mean", "plane_rms",
               "disp_p50", "img_blur"]
@@ -41,7 +42,7 @@ class DataTab(QWidget):
         btn.clicked.connect(self.refresh)
         top.addWidget(btn)
         self.lbl_info = QLabel("—")
-        self.lbl_info.setStyleSheet("color:#333;")
+        self.lbl_info.setStyleSheet(style.hint_style(self))
         top.addWidget(self.lbl_info)
         top.addStretch()
         v.addLayout(top)
@@ -71,7 +72,8 @@ class DataTab(QWidget):
         self.api_log = QTextEdit()
         self.api_log.setReadOnly(True)
         self.api_log.setFixedHeight(90)
-        self.api_log.setStyleSheet("font-family: Menlo, monospace; font-size: 11px;")
+        self.api_log.setFont(style.mono_font())
+        self.api_log.setStyleSheet(style.log_style())
         g.addWidget(self.api_log)
         v.addWidget(gbox)
 

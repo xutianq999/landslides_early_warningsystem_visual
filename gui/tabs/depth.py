@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox
                                QLabel, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget)
 
 from gui.imageview import ImageView
+from gui import style
 
 
 def turbo(gray01: np.ndarray) -> np.ndarray:
@@ -101,7 +102,7 @@ class DepthTab(QWidget):
 
         self.lbl = QLabel("—")
         self.lbl.setWordWrap(True)
-        self.lbl.setStyleSheet("color:#333;")
+        self.lbl.setStyleSheet(style.hint_style(self))
         v.addWidget(self.lbl)
         v.addStretch()
 

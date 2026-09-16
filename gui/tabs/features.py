@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout
 
 import config
 from gui.imageview import ImageView
+from gui import style
 
 ROI_TARGETS = [("gully", "沟壑"), ("debris", "堆积体"), ("both", "两者")]
 ROI_MASK_KEYS = {"gully": "mask", "debris": "debris", "both": "mask_all"}
@@ -121,7 +122,7 @@ class FeaturesTab(QWidget):
         v.addWidget(btn)
         self.lbl = QLabel("—")
         self.lbl.setWordWrap(True)
-        self.lbl.setStyleSheet("color:#333;")
+        self.lbl.setStyleSheet(style.hint_style(self))
         v.addWidget(self.lbl)
         v.addStretch()
 

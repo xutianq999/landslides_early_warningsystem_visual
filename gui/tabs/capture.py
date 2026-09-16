@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox
 
 import config
 from gui.imageview import ImageView
+from gui import style
 
 
 class _LogBridge(QObject, logging.Handler):
@@ -98,7 +99,7 @@ class CaptureTab(QWidget):
 
         self.lbl = QLabel("—")
         self.lbl.setWordWrap(True)
-        self.lbl.setStyleSheet("color:#333;")
+        self.lbl.setStyleSheet(style.hint_style(self))
         v.addWidget(self.lbl)
         v.addStretch()
         return panel
@@ -113,7 +114,8 @@ class CaptureTab(QWidget):
         v.addWidget(QLabel("日志"))
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setStyleSheet("font-family: Menlo, monospace; font-size: 11px;")
+        self.log.setFont(style.mono_font())
+        self.log.setStyleSheet(style.log_style())
         v.addWidget(self.log, 2)
         return w
 
