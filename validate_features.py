@@ -8,8 +8,10 @@
 
 用法:
     .venv/bin/python validate_features.py [图片.jpg]
+    .venv/bin/python validate_features.py            # 默认用 3.jpg
 """
 
+import argparse
 import sys
 
 import cv2
@@ -18,7 +20,7 @@ from PIL import Image
 
 import features as F
 
-IMG = sys.argv[1] if len(sys.argv) > 1 else "3.jpg"
+IMG = "3.jpg"                      # 由 main() 按命令行覆盖
 OK, WARN, BAD = "通过", "警告", "失败"
 
 
@@ -183,6 +185,13 @@ def test_dynamic_masking(pil):
 
 
 def main():
+    global IMG
+    ap = argparse.ArgumentParser(description="特征有效性验证(合成真值 / 扰动 / 位移 / 动态剔除)")
+    ap.add_argument("image", nargs="?", default="3.jpg",
+                    help="验证用的抓图(默认 3.jpg)")
+    ap.add_argument("-i", "--image", dest="image_opt", help="同位置参数,便于脚本里写全名")
+    args = ap.parse_args()
+    IMG = args.image_opt or args.image
     pil = Image.open(IMG).convert("RGB")
     print(f"验证图片: {IMG} ({pil.size[0]}x{pil.size[1]})")
     mono = test_geometry_ground_truth()

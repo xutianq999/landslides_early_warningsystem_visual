@@ -193,13 +193,16 @@ def decide(series: list[Metrics], params: dict | None = None) -> Verdict:
     for th, lv in ((p["change_t3"], 3), (p["change_t2"], 2), (p["change_t1"], 1)):
         if len(fr) >= persist and all(x >= th for x in fr[-persist:]):
             v.level = lv
-            v.reasons.append(f"变化率 {cur.change_frac:.1%} 连续 {persist} 次 ≥ {th:.1%}")
+            # 报平滑后的值:中值滤波会滞后于瞬时值,写 cur.change_frac 会出现
+            # "变化率 0.0% 连续 2 次 ≥ 12.0%"这种自相矛盾的日志
+            v.reasons.append(f"变化率 {fr[-1]:.1%}(平滑)连续 {persist} 次 ≥ {th:.1%}")
             break
 
     # 突发判定:**只报上升**(速率变大 / 加速度为正)。
     # 用绝对值会把"变形速率回落"也判成红警——那是事件后的沉降,不是危险;
     # 而阶跃的上升沿一定会让一阶差分出现正尖峰,所以用"速率"抓突发比用二阶差分更直接。
     # 阈值必须用现场"正常期"数据标定:这里的默认值是保守起点,不是现场值。
+    rate = None
     if len(fr) >= 2:
         dt = max(series[-1].ts - series[-2].ts, 1e-3)
         rate = (fr[-1] - fr[-2]) / dt
@@ -209,14 +212,16 @@ def decide(series: list[Metrics], params: dict | None = None) -> Verdict:
             v.reasons.append(f"变化率突增({rate:+.3f}/s 超 {p['rate_limit']})")
     if len(fr) >= 3:
         dts = [max(series[i].ts - series[i - 1].ts, 1e-3) for i in range(1, len(series))]
-        acc = (fr[-1] - 2 * fr[-2] + fr[-3]) / (float(np.mean(dts[-2:])) ** 2)
+        # 报出来的和判定用的是同一个数:否则会出现"日志写 +0.000/s² 却报了加速度过快"
+        accs = [(fr[i] - 2 * fr[i - 1] + fr[i - 2]) / (max(dts[i - 1], 1e-3) ** 2)
+                for i in range(2, len(fr))]
+        acc = accs[-1]
         v.signals["accel"] = acc
         need = int(p["accel_persist"])
-        accs = []
-        for i in range(2, len(fr)):
-            dt = max(dts[i - 1], 1e-3)
-            accs.append((fr[i] - 2 * fr[i - 1] + fr[i - 2]) / (dt * dt))
-        if len(accs) >= need and all(a > p["accel_limit"] for a in accs[-need:]):
+        # 只在变化率还在上升时才算"加速":中值滤波滚出事件时二阶差分也会出现正尖峰,
+        # 那是回落过程的假象(速率已转负),不是新的突发
+        rising = rate is None or rate > 0
+        if rising and len(accs) >= need and all(a > p["accel_limit"] for a in accs[-need:]):
             v.level = 3
             v.reasons.append(f"加速度过快({acc:+.3f}/s² 超 {p['accel_limit']})")
     v.level_name = LEVEL_NAMES[v.level]
@@ -236,6 +241,7 @@ class RealtimeChannel:
         self.persist_fn = persist_fn            # fn(metrics, verdict) 由调用方注入(落库)
         self.history: list[Metrics] = []
         self.last: Verdict | None = None
+        self.last_m: Metrics | None = None      # 最近一次指标(监视台要显示实时变化率)
 
     def tick(self) -> Verdict | None:
         """比对一次(通常每秒调用)。历史不足(还没攒够基线)时返回 None。"""
@@ -249,6 +255,10 @@ class RealtimeChannel:
         cur = self.source.latest(require_ok=False)
         if base is None or cur is None or cur is base:
             return None                        # 预热期:还没有可用的基线帧
+        # 调用可能比抽帧快(monitor 每 0.5s step 一次,而抽帧是 1 fps):同一帧被重复判定时
+        # dt 会退化成 1e-3,速率/加速度会被算成天文数字 → 假红警。同一帧只判一次。
+        if self.history and cur.ts <= self.history[-1].ts:
+            return self.last
         cf, cm, vf, of, ff = compare(cur.gray, base.gray, cur.mask, base.mask, p)
         m = Metrics(ts=cur.ts, change_frac=cf, change_mean=cm, valid_frac=vf,
                     occluded_frac=of, filled_frac=ff, brightness=cur.brightness,
@@ -263,6 +273,7 @@ class RealtimeChannel:
 
         v = decide(self.history, p)
         self.last = v
+        self.last_m = m
         if self.persist_fn:
             try:
                 self.persist_fn(m, v)

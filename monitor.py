@@ -14,12 +14,14 @@
     .venv/bin/python monitor.py --device HIK-01 --profile profiles/site1.json
     .venv/bin/python monitor.py --all --log monitor.log
 
+要图形界面启停/看实时指标就用 runtime.py(监视台),它调用的就是本模块的
+`make_runtime` 与 `DeviceRuntime`,参数口径与命令行完全一致。
+
 生产建议用 launchd 常驻(见 deploy/capture.plist.example,把脚本换成 monitor.py)。
 """
 
 import argparse
 import logging
-import os
 import signal
 import threading
 import time
@@ -28,10 +30,40 @@ from datetime import datetime
 import config
 import db as dbm
 import realtime as RT
-from capture import sample_from_source
+from capture import refresh_alarm, sample_from_source
 from framesource import FrameSource
 
 LOG = logging.getLogger("monitor")
+
+
+def make_runtime(device: str, db_path: str, *, profile: dict | None = None,
+                 rt_params: dict | None = None, analysis_overrides: dict | None = None,
+                 interval: float = 10.0, interval_rain: float = 5.0,
+                 rain_trigger: float = 2.0, imgsz: int = 480, use_mask: bool = True,
+                 enable_realtime: bool = True, enable_analysis: bool = True,
+                 pick_sharpest: bool = True, source: str | None = None) -> "DeviceRuntime":
+    """按同一套优先级组装一个点位的运行时(CLI 与监视台共用,避免两套参数)。
+
+    profile(算法配置文件)优先于 rt_params;两者都没有时用 realtime.DEFAULTS。
+    source 给定时覆盖配置里的 rtsp_url(本地视频文件即可无相机试跑)。
+    """
+    if profile is not None:
+        import tuning as prof_mod
+        rt_params = prof_mod.realtime_params(profile)
+        analysis_overrides = prof_mod.analysis_overrides(profile)
+    rtp = {**RT.DEFAULTS, **(rt_params or {})}
+    rtp.setdefault("store_interval", 10.0)
+    rtp["alarm_dir"] = str(config.ROOT / "alarms")
+    mask_fn = None
+    if use_mask:
+        classes = rtp.get("exclude_classes") or "person,car,truck,construction vehicle"
+        mask_fn = RT.yoloe_mask_fn(classes, imgsz=imgsz)
+    return DeviceRuntime(device, db_path, rt_params=rtp,
+                         analysis_overrides=dict(analysis_overrides or {}),
+                         interval_normal=interval, interval_rain=interval_rain,
+                         rain_trigger=rain_trigger, enable_realtime=enable_realtime,
+                         enable_analysis=enable_analysis, mask_fn=mask_fn,
+                         pick_sharpest=pick_sharpest, source=source)
 
 
 class DeviceRuntime:
@@ -40,9 +72,9 @@ class DeviceRuntime:
     def __init__(self, device: str, db_path: str, rt_params: dict, analysis_overrides: dict,
                  interval_normal: float, interval_rain: float, rain_trigger: float,
                  enable_realtime: bool = True, enable_analysis: bool = True,
-                 mask_fn=None, pick_sharpest: bool = True):
+                 mask_fn=None, pick_sharpest: bool = True, source: str | None = None):
         meta = config.device_meta(device)
-        url = meta.get("rtsp_url")
+        url = source or meta.get("rtsp_url")
         if not url:
             raise SystemExit(f"设备 {device} 没有 rtsp_url,请在 config.json 的 devices 里配置")
         self.device = device
@@ -66,6 +98,11 @@ class DeviceRuntime:
         self._busy = threading.Lock()
         self.next_analysis = time.time() + 2.0        # 启动后先等帧源攒几帧
         self.last_level = -1
+        # 供监视台(runtime.py)读取的运行状态
+        self.last_row: dict | None = None             # 最近一次分析的特征行
+        self.last_alarm: dict | None = None           # 最近一次分析后的报警等级
+        self.last_analysis_at: float | None = None
+        self.last_error = ""
 
     # ---- 生命周期
     def start(self):
@@ -76,6 +113,63 @@ class DeviceRuntime:
 
     def stop(self):
         self.src.stop()
+
+    def set_channels(self, realtime: bool | None = None, analysis: bool | None = None):
+        """运行时开关通道(监视台上勾掉某个通道立即生效,不用重启进程)"""
+        if realtime is not None:
+            self.enable_realtime = bool(realtime)
+        if analysis is not None:
+            if analysis and not self.enable_analysis:
+                self.next_analysis = time.time() + 1.0    # 重新打开时别等上一轮的间隔
+            self.enable_analysis = bool(analysis)
+        LOG.info("设备 %s 通道状态:实时 %s | 分析 %s", self.device,
+                 "开" if self.enable_realtime else "关",
+                 "开" if self.enable_analysis else "关")
+
+    # ---- 状态快照(监视台轮询这个,不直接碰内部结构)
+    def status(self) -> dict:
+        m = self.rt.last_m
+        v = self.rt.last
+        age = float(self.rt_params["baseline_min"]) * 60.0
+        hist = self.src.history_seconds()
+        st = self.src.stats
+        row = self.last_row or {}
+        return {
+            "device": self.device,
+            "enable_realtime": self.enable_realtime,
+            "enable_analysis": self.enable_analysis,
+            "connected": st.get("connected", False),
+            "frames": st.get("frames", 0),
+            "errors": st.get("errors", 0),
+            "reconnects": st.get("reconnects", 0),
+            "fps": st.get("fps", 0.0),
+            "src_error": st.get("last_error", ""),
+            "history_s": hist,
+            "need_s": age,
+            "ready": hist >= age * 0.8,
+            "has_verdict": v is not None,
+            "level": v.level if v else 0,
+            "level_name": v.level_name if v else ("预热中" if self.enable_realtime else "未启用"),
+            "camera_alarm": bool(v.camera_alarm) if v else False,
+            "reasons": list(v.reasons) if v else [],
+            "change_frac": m.change_frac if m else None,
+            "change_mean": m.change_mean if m else None,
+            "valid_frac": m.valid_frac if m else None,
+            "occluded_frac": m.occluded_frac if m else None,
+            "shift_px": m.shift_px if m else None,
+            "base_age_s": m.base_age_s if m else None,
+            "brightness": m.brightness if m else None,
+            "rate": (v.signals.get("rate") if v else None),
+            "accel": (v.signals.get("accel") if v else None),
+            "interval": self.interval,
+            "analysis_at": self.last_analysis_at,
+            "analysis_diff": row.get("diff_frac"),
+            "analysis_shift": row.get("shift_px"),
+            "analysis_rain": row.get("rain_1h"),
+            "analysis_alarm": (self.last_alarm or {}).get("level_name"),
+            "analysis_alarm_level": (self.last_alarm or {}).get("level", -1),
+            "error": self.last_error,
+        }
 
     # ---- 每个节拍调用
     def step(self):
@@ -95,11 +189,19 @@ class DeviceRuntime:
         if not self._busy.acquire(blocking=False):
             return
         try:
+            # do_alarm=False 后自己调 refresh_alarm:同一套动作,但能把报警等级留下来给监视台
             row = sample_from_source(self.src, self.device, datetime.now(),
+                                     do_alarm=False,
                                      overrides=self.analysis_overrides,
                                      pick_sharpest=self.pick_sharpest, db_path=self.db_path)
+            self.last_row = row
+            self.last_analysis_at = time.time()
+            if row is not None:
+                self.last_alarm = refresh_alarm(self.device, db_path=self.db_path)
             self.interval = self._next_interval(row)
+            self.last_error = ""
         except Exception as e:
+            self.last_error = str(e)
             LOG.exception("设备 %s 分析异常: %s", self.device, e)
         finally:
             self.next_analysis = time.time() + self.interval
@@ -168,6 +270,7 @@ def main():
     ap.add_argument("--all", action="store_true", help="配置里所有启用的点位")
     ap.add_argument("--db", nargs="?", const="", default=None, metavar="PATH")
     ap.add_argument("--profile", help="算法参数配置文件(profiles/*.json)")
+    ap.add_argument("--source", help="临时覆盖 RTSP 地址(可为本地视频文件,无相机试跑;多设备时慎用)")
     ap.add_argument("--interval", type=float, default=10.0, help="分析间隔秒(默认 10)")
     ap.add_argument("--rain-interval", type=float, default=5.0, help="降雨期分析间隔秒(默认 5)")
     ap.add_argument("--rain-trigger", type=float, default=2.0, help="触发加密的 1h 降雨量 mm")
@@ -190,10 +293,15 @@ def main():
         raise SystemExit("没有可运行的设备")
 
     prof = None
-    prof_mod = None
     if args.profile:
-        import tuning as prof_mod
-        prof = prof_mod.load(args.profile)
+        import tuning
+        try:
+            prof = tuning.load(args.profile)
+        except FileNotFoundError:
+            raise SystemExit(f"配置文件不存在: {args.profile}"
+                             f"(先生成:python tuning.py --from-config {devices[0]} -o {args.profile})")
+        except Exception as e:
+            raise SystemExit(f"配置文件读取失败({args.profile}): {e}")
         LOG.info("已加载配置文件 %s(version=%s)", args.profile, prof.get("version"))
 
     db_path = str(dbm.resolve_db_path(args.db or None))
@@ -202,23 +310,13 @@ def main():
     _c.close()
     runtimes = []
     for dev in devices:
-        if prof:
-            rt_params = prof_mod.realtime_params(prof)
-            analysis_over = prof_mod.analysis_overrides(prof)
-        else:
-            rt_params, analysis_over = dict(RT.DEFAULTS), {}
-        rt_params.setdefault("store_interval", 10.0)
-        rt_params["alarm_dir"] = str(config.ROOT / "alarms")
-        mask_classes = rt_params.get("exclude_classes") \
-            or "person,car,truck,construction vehicle"
-        mask_fn = None if args.no_mask else RT.yoloe_mask_fn(mask_classes, imgsz=args.imgsz)
         try:
-            runtimes.append(DeviceRuntime(
-                dev, db_path, rt_params=rt_params, analysis_overrides=analysis_over,
-                interval_normal=args.interval, interval_rain=args.rain_interval,
-                rain_trigger=args.rain_trigger,
+            runtimes.append(make_runtime(
+                dev, db_path, profile=prof, interval=args.interval,
+                interval_rain=args.rain_interval, rain_trigger=args.rain_trigger,
+                imgsz=args.imgsz, use_mask=not args.no_mask,
                 enable_realtime=not args.no_realtime, enable_analysis=not args.no_analysis,
-                mask_fn=mask_fn, pick_sharpest=not args.no_pick_sharpest))
+                pick_sharpest=not args.no_pick_sharpest, source=args.source))
         except SystemExit as e:
             LOG.warning("%s", e)
 
